@@ -520,8 +520,6 @@ ResultElement* ReadKNNGraphToGlobalMemory(const vector<vector<gpuknn::NNDItem>> 
         cerr << "knn_graph cudaMemcpyHostToDevice failed." << endl;
         exit(-1);
     }
-    TestKernel<<<dim3(1), dim3(1)>>> (knn_graph_dev);
-    cudaDeviceSynchronize();
     delete [] knn_graph_host;
     return knn_graph_dev;
 }
@@ -566,10 +564,17 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     knn_graph_dev = ReadKNNGraphToGlobalMemory(origin_knn_graph);
 
     int *global_locks_dev;
-    cudaMalloc(&global_locks_dev, g_size);
+    cudaMalloc(&global_locks_dev, g_size * sizeof(int));
     vector<int> zeros(g_size);
     cudaMemcpy(global_locks_dev, zeros.data(), g_size * sizeof(int),
                cudaMemcpyHostToDevice);
+    cuda_status = cudaGetLastError();
+
+    if (cuda_status != cudaSuccess) {
+        cerr << cudaGetErrorString(cuda_status) << endl;
+        cerr << "Initiate failed" << endl;
+        exit(-1);
+    }
 
     dim3 block_size(1024);
     dim3 grid_size(g_size);
@@ -584,14 +589,18 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     cuda_status = cudaGetLastError();
 
     if (cuda_status != cudaSuccess) {
-        runtime_error("Kernel failed.");
+        cerr << cudaGetErrorString(cuda_status) << endl;
+        cerr << "Kernel failed" << endl;
+        exit(-1);
     }
 
     // cerr << "End kernel." << endl;
     cuda_status = cudaMemcpy(knn_graph_dev, knn_graph, 
                              g_size * k * sizeof(int), cudaMemcpyDeviceToHost);
     if (cuda_status != cudaSuccess) {
-        runtime_error("knn_graph cudaMemcpy failed.");
+        cerr << cudaGetErrorString(cuda_status) << endl;
+        cerr << "knn_graph cudaMemcpy failed" << endl;
+        exit(-1);
     }
 
     ToHostGraph(&origin_knn_graph, knn_graph, g_size, k);
@@ -616,7 +625,9 @@ namespace gpuknn {
                    cudaMemcpyHostToDevice);
 
         if (cuda_status != cudaSuccess) {
-            runtime_error("cudaSetDevice failed.");
+            cerr << cudaGetErrorString(cuda_status) << endl;
+            cerr << "cudaSetDevice failed" << endl;
+            exit(-1);
         }
         Graph result(vecs_size);
         vector<vector<NNDItem>> g(vecs_size);
