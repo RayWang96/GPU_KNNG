@@ -1,6 +1,5 @@
 #ifndef XMUKNN_NNDESCENT_CUH
 #define XMUKNN_NNDESCENT_CUH
-#include <vector>
 #include "../xmuknn.h"
 
 using namespace std;
@@ -12,7 +11,8 @@ namespace gpuknn {
         int id = -1;
         bool visited = false;
         float distance = -1;
-        NNDItem(int id, bool visited, float distance) :id(id), visited(visited), distance(distance){}
+        NNDItem() : id(-1), visited(false), distance(-1) {}
+        NNDItem(int id, bool visited, float distance) : id(id), visited(visited), distance(distance){}
     };
 
     Graph NNDescent(const float* vectors, const int vecs_size, const int vecs_dim);

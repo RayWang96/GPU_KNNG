@@ -8,7 +8,8 @@ add_library(knncuda STATIC
     gpuknn/knncuda.cuh
     gpuknn/nndescent.cu
     gpuknn/nndescent.cuh
-    gpuknn/rsltelmt.cuh
+    gpuknn/unittest.cu
+    gpuknn/result_element.cuh
     tools/distfunc.hpp
     tools/filetool.hpp
     xmuknn.h
@@ -24,11 +25,11 @@ target_compile_options(knncuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas -O3>)
 
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 
-add_executable(gknng main.cpp)
+add_executable(gknng main.cu)
 
 set_property(TARGET gknng PROPERTY CUDA_SEPERABLE_COMPILATION ON)
 set_property(TARGET gknng PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-set_property(TARGET gknng PROPERTY CUDA_ARCHITECTURES 62)
+set_property(TARGET gknng PROPERTY CUDA_ARCHITECTURES 61)
 
 target_link_libraries(gknng PRIVATE knncuda ${CUBLAS_LIBRARIES})
  
