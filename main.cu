@@ -28,7 +28,7 @@ struct KNNItem {
 };
 
 void TestCUDANNDescent() {
-    int k = 32;
+    int k = 30;
     // string out_path = FileTool::GetOutPath();
     string base_path 
         = "/media/data4/huiwang/data/sift10k/sift10k.txt";
@@ -48,7 +48,7 @@ void TestCUDANNDescent() {
     FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
 
     auto start = clock();
-    Graph knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim);
+    auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim);
     auto end = clock();
 
     out << knn_graph.size() << " " << k << endl;
@@ -56,7 +56,8 @@ void TestCUDANNDescent() {
         const auto &x = knn_graph[i];
         out << i << " " << x.size() << " ";
         for (auto y : x) {
-            out << y << " ";
+            // out << y.distance << " " << y.id << "\t";
+            out << y.id << "\t";
         } out << endl;
     }
     out.close();

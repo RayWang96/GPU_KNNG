@@ -16,7 +16,7 @@ struct ResultElement {
         return this->distance < other.distance;
     }
     __host__ __device__ bool operator == (const ResultElement& other) const {
-        return (fabs(this->distance - other.distance) < RE_EPS) && (this->label == other.label);
+        return this->label == other.label;
     }
     __host__ __device__ bool operator >= (const ResultElement& other) const {
         return !(*this < other);

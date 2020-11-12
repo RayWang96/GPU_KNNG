@@ -15,6 +15,6 @@ namespace gpuknn {
         NNDItem(int id, bool visited, float distance) : id(id), visited(visited), distance(distance){}
     };
 
-    Graph NNDescent(const float* vectors, const int vecs_size, const int vecs_dim);
+    vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim);
 }
 #endif

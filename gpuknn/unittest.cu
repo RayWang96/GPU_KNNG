@@ -4,14 +4,11 @@ using namespace std;
 __global__ void TestKNNListInsertKernel(ResultElement* knn_list,
                                         const ResultElement element) {
     __shared__ int local_lock;
-    __shared__ int position_to_insert;
     if (threadIdx.x == 0) {
-        local_lock = -1;
-        position_to_insert = -1;
+        local_lock = 0;
     }
     __syncthreads();
-    InsertToLocalKNNList(knn_list, element, &local_lock, 
-                         &position_to_insert);
+    InsertToLocalKNNList(knn_list, 16, element, &local_lock);
 }
 
 void TestKNNListInsert() {
@@ -33,7 +30,7 @@ void TestKNNListInsert() {
         cout << re.distance << " ";
     } cout << endl;
 
-    ResultElement re_to_insert(56, 10);
+    ResultElement re_to_insert(86, 20);
 
     ResultElement* knn_list_dev;
     cudaMalloc(&knn_list_dev, knn_list_size * sizeof(ResultElement));

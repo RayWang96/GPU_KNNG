@@ -9,7 +9,7 @@ namespace xmuknn {
         for (int i = 0; i < a.size(); i++) {
             sum += (a[i] - b[i]) * (a[i] - b[i]);
         }
-        return sqrt(sum);
+        return sum;
     }
 
     static float GetDistance(const float* vec1_start, const float* vec1_end, const float* vec2_start, const float* vec2_end) {
@@ -18,7 +18,7 @@ namespace xmuknn {
             float diff = vec1_start[i] - vec2_start[i];
             sum += diff * diff;
         }
-        return sqrt(sum);
+        return sum;
     }
 
     static float GetDistance(const float* vec1_start, const float* vec2_start, const int dim) {
@@ -28,7 +28,7 @@ namespace xmuknn {
             float diff = vec1_start[i] - vec2_start[i];
             sum += diff * diff;
         }
-        return sqrt(sum);
+        return sum;
     }
 }
 #endif
