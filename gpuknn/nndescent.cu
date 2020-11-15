@@ -25,8 +25,9 @@
 
 using namespace std;
 using namespace xmuknn;
-bitset<100000> visited;
-#define DEVICE_ID 7
+bitset<100010> visited;
+#define DEVICE_ID 1
+#define LARGE_INT 0x3f3f3f3f
 
 pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph, 
                               const float *vectors, const int vecs_size, 
@@ -42,7 +43,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             for (int j = 0; j < knn_graph[i].size(); j++) {
                 auto& item = knn_graph[i][j];
                 // printf("%d\n", item.id);
-                if (visited[item.id]) continue;
+                if (item.id >= LARGE_INT || visited[item.id]) continue;
                 visited[item.id] = 1;
                 if (item.visited) {
                     graph_old[i].push_back(item.id);
@@ -78,7 +79,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         while (cnt < sample_num) {
             for (int j = 0; j < graph_rnew[i].size(); j++) {
                 int x = graph_rnew[i][j];
-                if (visited[x]) continue;
+                if (x >= LARGE_INT || visited[x]) continue;
                 visited[x] = 1;
                 cnt++;
                 graph_new[i].push_back(x);
@@ -92,7 +93,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         while (cnt < sample_num) {
             for (int j = 0; j < graph_rold[i].size(); j++) {
                 int x = graph_rold[i][j];
-                if (visited[x]) continue;
+                if (x >= LARGE_INT || visited[x]) continue;
                 visited[x] = 1;
                 cnt++;
                 graph_old[i].push_back(x);
@@ -141,7 +142,6 @@ const int NEIGHB_NUM_PER_LIST = 30;
 const int VECS_NUM_PER_BLOCK = NEIGHB_NUM_PER_LIST * 2;
 const int MAX_CALC_NUM = (VECS_NUM_PER_BLOCK * (VECS_NUM_PER_BLOCK-1)) / 2; // 1770
 const int NEIGHB_CACHE_NUM = 16;
-#define LARGE_INT 0x3f3f3f3f
 // const int HALF_NEIGHB_CACHE_NUM = NEIGHB_CACHE_NUM / 2;
 
 // __device__ int InsertToLocalKNNList(ResultElement *knn_list, 
@@ -258,38 +258,38 @@ __device__ void UniqueMergeSequential(const ResultElement* A, const int m,
         if (A[i] <= B[j]) {
             C[cnt++] = A[i++];
             if (cnt >= k) return;
-            while (i < m && A[i] == C[cnt-1]) i++;
-            while (j < n && B[j] == C[cnt-1]) j++;
+            while (i < m && A[i] <= C[cnt-1]) i++;
+            while (j < n && B[j] <= C[cnt-1]) j++;
         } else {
             C[cnt++] = B[j++];
             if (cnt >= k) return;
-            while (i < m && A[i] == C[cnt-1]) i++;
-            while (j < n && B[j] == C[cnt-1]) j++;
+            while (i < m && A[i] <= C[cnt-1]) i++;
+            while (j < n && B[j] <= C[cnt-1]) j++;
         }
     }
 
     if (i == m) {
         for (; j < n; j++) {
-            if (B[j] != C[cnt-1] && B[j].label < LARGE_INT) {
+            if (B[j] > C[cnt-1]) {
                 C[cnt++] = B[j];
             }
             if (cnt >= k) return;
         }
         for (; i < m; i++) {
-            if (A[i] != C[cnt-1] && A[i].label < LARGE_INT) {
+            if (A[i] > C[cnt-1]) {
                 C[cnt++] = A[i];
             }
             if (cnt >= k) return;
         }
     } else {
         for (; i < m; i++) {
-            if (A[i] != C[cnt-1] && A[i].label < LARGE_INT) {
+            if (A[i] > C[cnt-1]) {
                 C[cnt++] = A[i];
             }
             if (cnt >= k) return;
         }
         for (; j < n; j++) {
-            if (B[j] != C[cnt-1] && B[j].label < LARGE_INT) {
+            if (B[j] > C[cnt-1]) {
                 C[cnt++] = B[j];
             }
             if (cnt >= k) return;
@@ -642,7 +642,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 10;
+        int iteration = 6;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;

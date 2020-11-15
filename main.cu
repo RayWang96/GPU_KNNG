@@ -30,12 +30,20 @@ struct KNNItem {
 void TestCUDANNDescent() {
     int k = 30;
     // string out_path = FileTool::GetOutPath();
+
+    // string base_path 
+    //     = "/media/data4/huiwang/data/sift10k/sift10k.txt";
+    // string out_path 
+    //     = "/media/data4/huiwang/data/result/sift10k_knng_k32.txt";
+    // string ground_truth_path 
+    //     = "/media/data4/huiwang/data/sift10k/sift10k_groundtruth_self.txt";
+
     string base_path 
-        = "/media/data4/huiwang/data/sift10k/sift10k.txt";
+        = "/media/data4/huiwang/data/sift100k/sift100k.txt";
     string out_path 
-        = "/media/data4/huiwang/data/result/sift10k_knng_k32.txt";
+        = "/media/data4/huiwang/data/result/sift100k_knng_k30.txt";
     string ground_truth_path 
-        = "/media/data4/huiwang/data/sift10k/sift10k_groundtruth_self.txt";
+        = "/media/data4/huiwang/data/sift100k/sift100k_groundtruth_self.txt";
 
     auto out = ofstream(out_path);
     if (!out.is_open()) {
