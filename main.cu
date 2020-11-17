@@ -7,7 +7,6 @@
 #include "tools/filetool.hpp"
 #include "tools/distfunc.hpp"
 
-#include "gpuknn/gpudist.cuh"
 #include "gpuknn/nndescent.cuh"
 #include "gpuknn/unittest.cu"
 
@@ -44,6 +43,13 @@ void TestCUDANNDescent() {
         = "/media/data4/huiwang/data/result/sift100k_knng_k30.txt";
     string ground_truth_path 
         = "/media/data4/huiwang/data/sift100k/sift100k_groundtruth_self.txt";
+
+    // string base_path 
+    //     = "/media/data4/huiwang/data/sift1m/sift1m.txt";
+    // string out_path 
+    //     = "/media/data4/huiwang/data/result/sift1m_knng_k30.txt";
+    // string ground_truth_path 
+    //     = "/media/data4/huiwang/data/sift1m/sift1m_gold_knn40_sorted.txt";
 
     auto out = ofstream(out_path);
     if (!out.is_open()) {

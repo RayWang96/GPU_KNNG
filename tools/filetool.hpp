@@ -142,7 +142,7 @@ class FileTool {
         vecs = new float[size * dim];
         for (int i = 0; i < size; i++) {
             if (show_process) {
-                if (i % 1234 == 0) 
+                if (i % 12345 == 0) 
                     std::cerr << "\r" << i;
                 if (i == size - 1)
                     std::cerr << "\r" << size;

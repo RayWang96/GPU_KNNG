@@ -2,7 +2,6 @@
 #define XMUKNN_NNDESCENT_CU
 
 #include <vector>
-#include <device_functions.h>
 #include <iostream>
 #include <assert.h>
 #include <bitset>
@@ -14,7 +13,6 @@
 #include "result_element.cuh"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-#include "gpudist.cuh"
 #include "nndescent.cuh"
 #include "../xmuknn.h"
 #include "../tools/distfunc.hpp"
@@ -25,8 +23,7 @@
 
 using namespace std;
 using namespace xmuknn;
-bitset<100010> visited;
-#define DEVICE_ID 1
+#define DEVICE_ID 3
 #define LARGE_INT 0x3f3f3f3f
 
 pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph, 
@@ -35,8 +32,9 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
     int sample_num = 15;
     Graph graph_new, graph_rnew, graph_old, graph_rold;
     graph_new = graph_rnew = graph_old = graph_rold = Graph(knn_graph.size());
+    vector<bool> visited(vecs_size);
+    vector<int> for_clear;
     for (int i = 0; i < knn_graph.size(); i++) {
-        visited.reset();
         int cnt = 0;
         int last_cnt = 0;
         while (cnt < sample_num) {
@@ -45,6 +43,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
                 // printf("%d\n", item.id);
                 if (item.id >= LARGE_INT || visited[item.id]) continue;
                 visited[item.id] = 1;
+                for_clear.push_back(item.id);
                 if (item.visited) {
                     graph_old[i].push_back(item.id);
                 }
@@ -60,6 +59,10 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             if (last_cnt == cnt) break;
             last_cnt = cnt;
         }
+        for (auto x:for_clear) {
+            visited[x] = 0;
+        }
+        for_clear.clear();
     }
     for (int i = 0; i < knn_graph.size(); i++) {
         for (int j = 0; j < graph_new[i].size(); j++) {
@@ -71,9 +74,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             graph_rold[id].push_back(i);
         }
     }
-
     for (int i = 0; i < knn_graph.size(); i++) {
-        visited.reset();
         int cnt = 0;
         int last_cnt = 0;
         while (cnt < sample_num) {
@@ -81,6 +82,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
                 int x = graph_rnew[i][j];
                 if (x >= LARGE_INT || visited[x]) continue;
                 visited[x] = 1;
+                for_clear.push_back(x);
                 cnt++;
                 graph_new[i].push_back(x);
                 if (cnt >= sample_num) break;
@@ -95,6 +97,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
                 int x = graph_rold[i][j];
                 if (x >= LARGE_INT || visited[x]) continue;
                 visited[x] = 1;
+                for_clear.push_back(x);
                 cnt++;
                 graph_old[i].push_back(x);
                 if (cnt >= sample_num) break;
@@ -102,6 +105,10 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             if (cnt == last_cnt) break;
             last_cnt = cnt;
         }
+        for (auto x:for_clear) {
+            visited[x] = 0;
+        }
+        for_clear.clear();
     }
     
     for (int i = 0; i < knn_graph.size(); i++) {
@@ -390,7 +397,6 @@ __global__ void LocalDistCompareKernel(ResultElement *knn_graph, int *global_loc
     int calc_new_num = (num_new * (num_new - 1)) / 2;
     int calc_new_old_num = num_new * num_old;
     int calc_num = calc_new_num + calc_new_old_num;
-
     num_it = GetItNum(calc_num, blockDim.x);
     if (blockIdx.x == 0 && threadIdx.x == 0) {
         printf("check calc. num. %d %d %d %d %d %d\n", 
@@ -642,7 +648,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 6;
+        int iteration = 11;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
