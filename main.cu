@@ -87,6 +87,7 @@ int main() {
     // UnitTest();
     //TestKNNAlgorithm();
     TestCUDANNDescent();
+    // TestTiledDistanceCompare();
     //TestCUDADistance();
     //TestCUDASearch();
     //TestCUDANewSearch();

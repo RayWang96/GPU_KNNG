@@ -29,7 +29,7 @@ using namespace xmuknn;
 pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph, 
                               const float *vectors, const int vecs_size, 
                               const int vecs_dim) {
-    int sample_num = 15;
+    int sample_num = 30;
     Graph graph_new, graph_rnew, graph_old, graph_rold;
     graph_new = graph_rnew = graph_old = graph_rold = Graph(knn_graph.size());
     vector<bool> visited(vecs_size);
@@ -40,7 +40,6 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         while (cnt < sample_num) {
             for (int j = 0; j < knn_graph[i].size(); j++) {
                 auto& item = knn_graph[i][j];
-                // printf("%d\n", item.id);
                 if (item.id >= LARGE_INT || visited[item.id]) continue;
                 visited[item.id] = 1;
                 for_clear.push_back(item.id);
@@ -120,17 +119,6 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         graph_old[i].erase(unique(graph_old[i].begin(), 
                                   graph_old[i].end()), graph_old[i].end());
     }
-    // for (int i = 9050; i < 9100; i++) {
-    //     printf("graph new %d %d: ", i, graph_new[i].size());
-    //     for (auto x:graph_new[i]) {
-    //         printf("%d ", x);
-    //     } puts("");
-
-    //     printf("graph old %d %d: ", i, graph_old[i].size());
-    //     for (auto x:graph_old[i]) {
-    //         printf("%d ", x);
-    //     } puts("");
-    // }
     return make_pair(graph_new, graph_old);
 }
 
@@ -147,8 +135,9 @@ __device__ void Swap(int &a, int &b) {
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 30;
 const int VECS_NUM_PER_BLOCK = NEIGHB_NUM_PER_LIST * 2;
-const int MAX_CALC_NUM = (VECS_NUM_PER_BLOCK * (VECS_NUM_PER_BLOCK-1)) / 2; // 1770
+const int MAX_CALC_NUM = (VECS_NUM_PER_BLOCK * (VECS_NUM_PER_BLOCK-1)) / 2;
 const int NEIGHB_CACHE_NUM = 16;
+const int TILE_WIDTH = 16;
 // const int HALF_NEIGHB_CACHE_NUM = NEIGHB_CACHE_NUM / 2;
 
 // __device__ int InsertToLocalKNNList(ResultElement *knn_list, 
@@ -331,32 +320,225 @@ __device__ void MergeLocalGraphWithGlobalGraph(const ResultElement* local_knn_gr
     }
 }
 
-__global__ void LocalDistCompareKernel(ResultElement *knn_graph, int *global_locks,
-                                       const float* vectors,
-                                       const int *edges_new, const int *dest_new, 
-                                       const int *edges_old, const int *dest_old) {
-    //shared memory limit is 96KB
-    __shared__ float shared_vectors[VECS_NUM_PER_BLOCK][VEC_DIM]; 
-    // 60 * 128 * 4 = 30720B
-    __shared__ int pos_gnew, pos_gold; 
-    // 4B
-    __shared__ int neighbors[VECS_NUM_PER_BLOCK]; 
-    // 60 * 4 = 240B
-    __shared__ int num_new, num_old; 
-    // 8B
-    __shared__ float distances[MAX_CALC_NUM]; 
-    // 1770 * 4 = 7080B
-    __shared__ ResultElement knn_graph_cache[VECS_NUM_PER_BLOCK * NEIGHB_CACHE_NUM]; 
-    // 60 * 15 * 8 = 7200B
-    __shared__ int local_locks[VECS_NUM_PER_BLOCK];
-    // 60 * 4 = 240B
-    // 30720 + 4 + 240 + 8 + 7080 + 7200 + 240 = 45732;
+__global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_locks,
+                                          const float *vectors,
+                                          const int *edges_new, const int *dest_new,
+                                          const int num_new_max) {
+    extern __shared__ char buffer[];
 
-    // Initiate 
+    __shared__ float *shared_vectors, *distances;
+    __shared__ int *neighbors, *local_locks;
+    __shared__ ResultElement *knn_graph_cache;
+    __shared__ int pos_gnew, num_new;
+
+    int tx = threadIdx.x;
+    if (tx == 0) {
+        shared_vectors = (float *)buffer;
+        distances = 
+            (float *)((char *)buffer + num_new_max * VEC_DIM * sizeof(float));
+        neighbors = 
+            (int *)((char *)distances + (num_new_max * (num_new_max - 1) / 2) * sizeof(float));
+        local_locks = (int *)((char *)neighbors + num_new_max * sizeof(int));
+        knn_graph_cache = 
+            (ResultElement *)((char *)local_locks + num_new_max * sizeof(int));
+    }
+    __syncthreads();
+
     int list_id = blockIdx.x;
-    int tx = threadIdx.x; // blockDim.x == 1024
+    int block_dim_x = blockDim.x;
 
-    if (tx < VECS_NUM_PER_BLOCK) {
+    if (tx < num_new_max) {
+        local_locks[tx] = 0;
+    }
+
+    if (tx == 0) {
+        int next_pos = edges_new[list_id + 1];
+        int now_pos = edges_new[list_id];
+        num_new = next_pos - now_pos;
+        pos_gnew = now_pos;
+    }
+    __syncthreads();
+    int neighb_num = num_new;
+    if (tx < neighb_num) {
+        neighbors[tx] = dest_new[pos_gnew + tx];
+    }
+    __syncthreads();
+    int num_vec_per_it = block_dim_x / VEC_DIM;
+    int num_it = GetItNum(neighb_num, num_vec_per_it);
+    for (int i = 0; i < num_it; i++) {
+        int x = i * num_vec_per_it + tx / VEC_DIM;
+        if (x >= neighb_num) continue;
+        int y = tx % VEC_DIM;
+        int vec_id = neighbors[x];
+        shared_vectors[x * VEC_DIM + y] = vectors[vec_id * VEC_DIM + y];
+    }
+
+    int calc_num = (neighb_num * (neighb_num - 1)) / 2;
+
+    num_it = GetItNum(calc_num, block_dim_x);
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        printf("check calc. num. %d %d\n", neighb_num, calc_num);
+    }
+    for (int i = 0; i < num_it; i++) {
+        int x = i * block_dim_x + tx;
+        if (x < calc_num) {
+            distances[x] = 0;
+        }
+    }
+    __syncthreads();
+
+    for (int i = 0; i < num_it; i++) {
+        int no = i * block_dim_x + tx;
+        if (no >= calc_num) continue;
+        int idx = no + 1;
+        int x = ceil(sqrt(2 * idx + 0.25) - 0.5);
+        int y = idx - (x - 1) * x / 2 - 1;
+        if (x >= neighb_num || y >= neighb_num) continue;
+        float sum = 0;
+        for (int j = 0; j < VEC_DIM; j++) {
+            float diff = shared_vectors[x * VEC_DIM + j] - 
+                         shared_vectors[y * VEC_DIM + j];
+            sum += diff * diff;
+        }
+        distances[no] = sum;
+    }
+    __syncthreads();
+
+    num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
+    for (int i = 0; i < num_it; i++) {
+        int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
+        for (int j = 0; j < num_it2; j++) {
+            int pos = j * block_dim_x + tx;
+            if (pos < neighb_num * NEIGHB_CACHE_NUM)
+                knn_graph_cache[pos] = ResultElement(1e10, 0x3f3f3f3f);
+        }
+        int list_size = 
+            i == num_it - 1 ? NEIGHB_NUM_PER_LIST
+                 % NEIGHB_CACHE_NUM : NEIGHB_CACHE_NUM;
+        int no = tx / NEIGHB_CACHE_NUM;
+        if (no >= neighb_num) continue;
+        __syncthreads();
+        int lists_per_it = block_dim_x;
+        num_it2 = GetItNum(calc_num, lists_per_it); 
+        for (int j = 0; j < num_it2; j++) {
+            no = j * lists_per_it + tx;
+            if (no >= calc_num) continue;
+            int idx = no + 1;
+            int x = ceil(sqrt(2 * idx + 0.25) - 0.5);
+            int y = idx - (x - 1) * x / 2 - 1;
+            if (x >= neighb_num || y >= neighb_num) continue;
+            Swap(x, y);
+            if (neighbors[x] == neighbors[y]) continue;
+            ResultElement *list_x = &knn_graph_cache[x * NEIGHB_CACHE_NUM];
+            ResultElement *list_y = &knn_graph_cache[y * NEIGHB_CACHE_NUM];
+
+            ResultElement re_xy = ResultElement(distances[no], neighbors[y]);
+            ResultElement re_yx = ResultElement(distances[no], neighbors[x]);
+
+            InsertToLocalKNNList(list_x, list_size, re_xy, &local_locks[x]);
+            InsertToLocalKNNList(list_y, list_size, re_yx, &local_locks[y]);
+            __syncthreads();
+        }
+        MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
+                                       neighb_num, knn_graph, global_locks);
+        __syncthreads();
+    }
+}
+
+
+// blockDim.x = TILE_WIDTH * TILE_WIDTH;
+__device__ void GetNewOldDistances(float *distances, const float *vectors,
+                                   const int *new_neighbors, const int num_new,
+                                   const int *old_neighbors, const int num_old) {
+    __shared__ float nsv[TILE_WIDTH][TILE_WIDTH]; //New shared vectors
+    __shared__ float osv[TILE_WIDTH][TILE_WIDTH]; //Old shared vectors
+    const int tile_size = TILE_WIDTH * TILE_WIDTH;
+    const int width = VEC_DIM;
+
+    int tx = threadIdx.x;
+    int t_row = tx / TILE_WIDTH;
+    int t_col = tx % TILE_WIDTH;
+    int row_num = (int)(ceil(1.0 * num_new / TILE_WIDTH));
+    int col_num = (int)(ceil(1.0 * num_old / TILE_WIDTH));
+    int tiles_num = row_num * col_num;
+    // if (threadIdx.x == 0) {
+    //     printf("%d %d %d\n", row_num, col_num, tiles_num);
+    // }
+    for (int i = 0; i < tiles_num; i++) {
+        float distance = -1.0;
+        int row_new = i / col_num * TILE_WIDTH;
+        int row_old = i % col_num * TILE_WIDTH;
+
+        // Assume that the dimension of vectors larger than num of neighbors.
+        for (int ph = 0; ph < ceil(width / (float)TILE_WIDTH); ph++) {
+            if ((row_new + t_row < num_new) && (ph * TILE_WIDTH + t_col < VEC_DIM)) {
+                nsv[t_row][t_col] = 
+                    vectors[new_neighbors[row_new + t_row] * VEC_DIM +
+                            ph * TILE_WIDTH + t_col];
+            } else {
+                nsv[t_row][t_col] = 1e10;
+            }
+
+            if ((row_old + t_col < num_old) && (ph * TILE_WIDTH + t_row < VEC_DIM)) {
+                osv[t_col][t_row] = 
+                    vectors[old_neighbors[row_old + t_col] * VEC_DIM +
+                            ph * TILE_WIDTH + t_row];
+            } else {
+                osv[t_col][t_row] = 1e10;
+            }
+            __syncthreads();
+
+            for (int k = 0; k < TILE_WIDTH; k++) {
+                float a = nsv[t_row][k], b = osv[t_col][k];
+                if (a > 1e9 || b > 1e9) {
+                }
+                else {
+                    float diff = a - b;
+                    if (distance == -1.0) distance = 0;
+                    distance += diff * diff;
+                }
+            }
+            __syncthreads();
+        }
+        // if ((row_new + t_row) * num_old + row_old + t_col == 35) {
+        //     printf("%d %d %f\n", tx, i, distance);
+        // }
+        if (distance != -1.0)
+            distances[(row_new + t_row) * num_old + row_old + t_col] = distance;
+    }
+}
+
+__global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *global_locks, 
+                                             const float *vectors,
+                                             const int *edges_new, const int *dest_new,
+                                             const int num_new_max, 
+                                             const int *edges_old, const int *dest_old,
+                                             const int num_old_max) {
+    extern __shared__ char buffer[];
+
+    __shared__ float *distances;
+    __shared__ int *neighbors, *local_locks;
+    __shared__ ResultElement *knn_graph_cache;
+
+    __shared__ int pos_gnew, pos_gold, num_new, num_old;
+
+    int neighb_num_max = num_new_max + num_old_max;
+    int tx = threadIdx.x;
+    if (tx == 0) {
+        distances = (float *)buffer;
+        neighbors = 
+            (int *)((char *)buffer + (num_new_max * num_old_max) * sizeof(float));
+        local_locks = 
+            (int *)((char *)neighbors + neighb_num_max * sizeof(int));
+        knn_graph_cache =
+            (ResultElement *)((char *)local_locks + neighb_num_max * sizeof(int));
+    }
+    __syncthreads();
+
+    int list_id = blockIdx.x;
+    int block_dim_x = blockDim.x;
+
+    if (tx < neighb_num_max) {
         local_locks[tx] = 0;
     }
 
@@ -373,7 +555,6 @@ __global__ void LocalDistCompareKernel(ResultElement *knn_graph, int *global_loc
     }
     __syncthreads();
     int neighb_num = num_new + num_old;
-    // Read all neighbors to shared memory.
     if (tx < num_new) {
         neighbors[tx] = dest_new[pos_gnew + tx];
     } else if (tx >= num_new && tx < neighb_num) {
@@ -381,91 +562,39 @@ __global__ void LocalDistCompareKernel(ResultElement *knn_graph, int *global_loc
     }
     __syncthreads();
 
-    // Read needed vectors to shared memory.
-    //operation per iteration
-    int num_vec_per_it = blockDim.x / VEC_DIM; // 1024 / 128 = 8
-    int num_it = GetItNum(neighb_num, num_vec_per_it); // 60, 8 = 8
-    for (int i = 0; i < num_it; i++) {
-        int x = i * num_vec_per_it + tx / VEC_DIM;
-        if (x >= neighb_num) continue;
-        int y = tx % VEC_DIM;
-        int vec_id = neighbors[x];
-        shared_vectors[x][y] = vectors[vec_id * VEC_DIM + y];
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        printf("new-old calc. num. %d %d %d\n", num_new, num_old, neighb_num);
     }
 
-    // Calculate distances.
-    int calc_new_num = (num_new * (num_new - 1)) / 2;
-    int calc_new_old_num = num_new * num_old;
-    int calc_num = calc_new_num + calc_new_old_num;
-    num_it = GetItNum(calc_num, blockDim.x);
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        printf("check calc. num. %d %d %d %d %d %d\n", 
-               num_new, num_old, neighb_num, calc_new_num, calc_new_old_num, calc_num);
-    }
-    for (int i = 0; i < num_it; i++) {
-        int x = i * num_it + tx;
-        if (x < calc_num) {
-            distances[x] = 0;
-        }
-    }
+    GetNewOldDistances(distances, vectors, 
+                       neighbors, num_new, neighbors + num_new, num_old);
     __syncthreads();
-    num_vec_per_it = blockDim.x; // 1024 / 128 = 8
-    num_it = GetItNum(calc_num, num_vec_per_it); // 1520 / 8 = 190
-    for (int i = 0; i < num_it; i++) {
-        int no = i * num_vec_per_it + tx; // xth distance calculation
-        if (no >= calc_num) continue;
-        int x, y;
-        if (no < calc_new_num) {
-            int idx = no + 1; // To fit the following formula
-            x = ceil(sqrt(2 * idx + 0.25) - 0.5);
-            y = idx - (x - 1) * x / 2 - 1;
-        } else {
-            int idx = no - calc_new_num;
-            x = idx / num_old;
-            y = idx % num_old + num_new;
-        }
-        if (x >= neighb_num || y >= neighb_num) continue;
-        float sum = 0;
-        for (int j = 0; j < VEC_DIM; j++) {
-            float diff = shared_vectors[x][j] - shared_vectors[y][j];
-            sum += diff * diff;
-        }
-        distances[no] = sum;
-    }
-    __syncthreads();
-    // Update the local graph.
-    num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
+
+    int calc_num = num_new * num_old;
+    int num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
     for (int i = 0; i < num_it; i++) {
         // Read list to cache
-        int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, blockIdx.x);
+        int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
         for (int j = 0; j < num_it2; j++) {
-            if (tx < neighb_num * NEIGHB_CACHE_NUM)
-                knn_graph_cache[tx] = ResultElement(1e10, 0x3f3f3f3f);
+            int pos = j * block_dim_x + tx;
+            if (pos < neighb_num * NEIGHB_CACHE_NUM)
+                knn_graph_cache[pos] = ResultElement(1e10, 0x3f3f3f3f);
         }
-        int list_size = 
-            i == num_it - 1 ? NEIGHB_NUM_PER_LIST
-                 % NEIGHB_CACHE_NUM : NEIGHB_CACHE_NUM;
+        int list_size = i == num_it - 1 ? 
+                        NEIGHB_NUM_PER_LIST % NEIGHB_CACHE_NUM : NEIGHB_CACHE_NUM;
         int no = tx / NEIGHB_CACHE_NUM;
         if (no >= neighb_num) continue;
         __syncthreads();
         //Update the partial list
-        int lists_per_it = blockDim.x;
+        int lists_per_it = block_dim_x;
         num_it2 = GetItNum(calc_num, lists_per_it); 
         // 1520, 1024 = 2
         for (int j = 0; j < num_it2; j++) {
-            __syncthreads();
             no = j * lists_per_it + tx;
             if (no >= calc_num) continue;
-            int x, y;
-            if (no < calc_new_num) {
-                int idx = no + 1; // To fit the following formula
-                x = ceil(sqrt(2 * idx + 0.25) - 0.5);
-                y = idx - (x - 1) * x / 2 - 1;
-            } else {
-                int idx = no - calc_new_num;
-                x = idx / num_old;
-                y = idx % num_old + num_new;
-            }
+            int idx = no;
+            int x = idx / num_old;
+            int y = idx % num_old + num_new;
             if (x >= neighb_num || y >= neighb_num) continue;
             Swap(x, y); // Reduce threads confliction
             if (neighbors[x] == neighbors[y]) continue;
@@ -474,15 +603,169 @@ __global__ void LocalDistCompareKernel(ResultElement *knn_graph, int *global_loc
 
             ResultElement re_xy = ResultElement(distances[no], neighbors[y]);
             ResultElement re_yx = ResultElement(distances[no], neighbors[x]);
-
             InsertToLocalKNNList(list_x, list_size, re_xy, &local_locks[x]);
             InsertToLocalKNNList(list_y, list_size, re_yx, &local_locks[y]);
+            __syncthreads();
         }
         MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
                                        neighb_num, knn_graph, global_locks);
         __syncthreads();
     }
 }
+
+// __global__ void LocalDistCompareKernel(ResultElement *knn_graph, int *global_locks,
+//                                        const float* vectors,
+//                                        const int *edges_new, const int *dest_new, 
+//                                        const int *edges_old, const int *dest_old) {
+//     //shared memory limit is 96KB
+//     __shared__ float shared_vectors[VECS_NUM_PER_BLOCK][VEC_DIM]; 
+//     // 60 * 128 * 4 = 30720B
+//     __shared__ int pos_gnew, pos_gold; 
+//     // 4B
+//     __shared__ int neighbors[VECS_NUM_PER_BLOCK]; 
+//     // 60 * 4 = 240B
+//     __shared__ int num_new, num_old; 
+//     // 8B
+//     __shared__ float distances[MAX_CALC_NUM]; 
+//     // 1770 * 4 = 7080B
+//     __shared__ ResultElement knn_graph_cache[VECS_NUM_PER_BLOCK * NEIGHB_CACHE_NUM]; 
+//     // 60 * 15 * 8 = 7200B
+//     __shared__ int local_locks[VECS_NUM_PER_BLOCK];
+//     // 60 * 4 = 240B
+//     // 30720 + 4 + 240 + 8 + 7080 + 7200 + 240 = 45732;
+
+//     // Initiate 
+//     int list_id = blockIdx.x;
+//     int tx = threadIdx.x; // blockDim.x == 1024
+
+//     if (tx < VECS_NUM_PER_BLOCK) {
+//         local_locks[tx] = 0;
+//     }
+
+//     if (tx == 0) {
+//         int next_pos = edges_new[list_id + 1];
+//         int now_pos = edges_new[list_id];
+//         num_new = next_pos - now_pos;
+//         pos_gnew = now_pos;
+//     } else if (tx == 32) {
+//         int next_pos = edges_old[list_id + 1];
+//         int now_pos = edges_old[list_id];
+//         num_old = next_pos - now_pos;
+//         pos_gold = now_pos;
+//     }
+//     __syncthreads();
+//     int neighb_num = num_new + num_old;
+//     // Read all neighbors to shared memory.
+//     if (tx < num_new) {
+//         neighbors[tx] = dest_new[pos_gnew + tx];
+//     } else if (tx >= num_new && tx < neighb_num) {
+//         neighbors[tx] = dest_old[pos_gold + tx - num_new];
+//     }
+//     __syncthreads();
+
+//     // Read needed vectors to shared memory.
+//     //operation per iteration
+//     int num_vec_per_it = blockDim.x / VEC_DIM; // 1024 / 128 = 8
+//     int num_it = GetItNum(neighb_num, num_vec_per_it); // 60, 8 = 8
+//     for (int i = 0; i < num_it; i++) {
+//         int x = i * num_vec_per_it + tx / VEC_DIM;
+//         if (x >= neighb_num) continue;
+//         int y = tx % VEC_DIM;
+//         int vec_id = neighbors[x];
+//         shared_vectors[x][y] = vectors[vec_id * VEC_DIM + y];
+//     }
+
+//     // Calculate distances.
+//     int calc_new_num = (num_new * (num_new - 1)) / 2;
+//     int calc_new_old_num = num_new * num_old;
+//     int calc_num = calc_new_num + calc_new_old_num;
+//     num_it = GetItNum(calc_num, blockDim.x);
+//     if (blockIdx.x == 0 && threadIdx.x == 0) {
+//         printf("check calc. num. %d %d %d %d %d %d\n", 
+//                num_new, num_old, neighb_num, calc_new_num, calc_new_old_num, calc_num);
+//     }
+//     for (int i = 0; i < num_it; i++) {
+//         int x = i * blockDim.x + tx;
+//         if (x < calc_num) {
+//             distances[x] = 0;
+//         }
+//     }
+//     __syncthreads();
+//     num_vec_per_it = blockDim.x; // 1024 / 128 = 8
+//     num_it = GetItNum(calc_num, num_vec_per_it); // 1520 / 8 = 190
+//     for (int i = 0; i < num_it; i++) {
+//         int no = i * num_vec_per_it + tx; // xth distance calculation
+//         if (no >= calc_num) continue;
+//         int x, y;
+//         if (no < calc_new_num) {
+//             int idx = no + 1; // To fit the following formula
+//             x = ceil(sqrt(2 * idx + 0.25) - 0.5);
+//             y = idx - (x - 1) * x / 2 - 1;
+//         } else {
+//             int idx = no - calc_new_num;
+//             x = idx / num_old;
+//             y = idx % num_old + num_new;
+//         }
+//         if (x >= neighb_num || y >= neighb_num) continue;
+//         float sum = 0;
+//         for (int j = 0; j < VEC_DIM; j++) {
+//             float diff = shared_vectors[x][j] - shared_vectors[y][j];
+//             sum += diff * diff;
+//         }
+//         distances[no] = sum;
+//     }
+//     __syncthreads();
+//     // Update the local graph.
+//     num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
+//     for (int i = 0; i < num_it; i++) {
+//         // Read list to cache
+//         int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, blockDim.x);
+//         for (int j = 0; j < num_it2; j++) {
+//             int pos = j * blockDim.x + tx;
+//             if (pos < neighb_num * NEIGHB_CACHE_NUM)
+//                 knn_graph_cache[pos] = ResultElement(1e10, 0x3f3f3f3f);
+//         }
+//         int list_size = 
+//             i == num_it - 1 ? NEIGHB_NUM_PER_LIST
+//                  % NEIGHB_CACHE_NUM : NEIGHB_CACHE_NUM;
+//         int no = tx / NEIGHB_CACHE_NUM;
+//         if (no >= neighb_num) continue;
+//         __syncthreads();
+//         //Update the partial list
+//         int lists_per_it = blockDim.x;
+//         num_it2 = GetItNum(calc_num, lists_per_it); 
+//         // 1520, 1024 = 2
+//         for (int j = 0; j < num_it2; j++) {
+//             __syncthreads();
+//             no = j * lists_per_it + tx;
+//             if (no >= calc_num) continue;
+//             int x, y;
+//             if (no < calc_new_num) {
+//                 int idx = no + 1; // To fit the following formula
+//                 x = ceil(sqrt(2 * idx + 0.25) - 0.5);
+//                 y = idx - (x - 1) * x / 2 - 1;
+//             } else {
+//                 int idx = no - calc_new_num;
+//                 x = idx / num_old;
+//                 y = idx % num_old + num_new;
+//             }
+//             if (x >= neighb_num || y >= neighb_num) continue;
+//             Swap(x, y); // Reduce threads confliction
+//             if (neighbors[x] == neighbors[y]) continue;
+//             ResultElement *list_x = &knn_graph_cache[x * NEIGHB_CACHE_NUM];
+//             ResultElement *list_y = &knn_graph_cache[y * NEIGHB_CACHE_NUM];
+
+//             ResultElement re_xy = ResultElement(distances[no], neighbors[y]);
+//             ResultElement re_yx = ResultElement(distances[no], neighbors[x]);
+
+//             InsertToLocalKNNList(list_x, list_size, re_xy, &local_locks[x]);
+//             InsertToLocalKNNList(list_y, list_size, re_yx, &local_locks[y]);
+//         }
+//         MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
+//                                        neighb_num, knn_graph, global_locks);
+//         __syncthreads();
+//     }
+// }
 
 pair<int*, int*> ReadGraphToGlobalMemory(const Graph& graph) {
     int pos = 0;
@@ -579,6 +862,14 @@ void ToHostGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     }
 }
 
+int GetMaxListSize(const Graph &g) {
+    int res = 0;
+    for (const auto &list : g) {
+        res = max((int)list.size(), res);
+    }
+    return res;
+}
+
 void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr, 
                  float* vectors_dev, 
                  const Graph& newg, const Graph& oldg, const int k) {
@@ -612,11 +903,34 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     dim3 block_size(1024);
     dim3 grid_size(g_size);
     // cerr << "Start kernel." << endl;
-    LocalDistCompareKernel<<<grid_size, block_size>>>(knn_graph_dev, 
-                                                      global_locks_dev,
-                                                      vectors_dev,
-                                                      edges_dev_new, dest_dev_new, 
-                                                      edges_dev_old, dest_dev_old);
+    const int num_new_max = GetMaxListSize(newg);
+    const int num_old_max = GetMaxListSize(oldg);
+    size_t shared_memory_size = 
+        num_new_max * VEC_DIM * sizeof(float) + 
+        (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
+        num_new_max * 2 * sizeof(int) + 
+        num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement);
+
+    NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
+        (knn_graph_dev, global_locks_dev, vectors_dev,
+         edges_dev_new, dest_dev_new, num_new_max);
+
+    block_size = dim3(TILE_WIDTH * TILE_WIDTH);
+    int neighb_num_max = num_new_max + num_old_max;
+    shared_memory_size = (num_new_max * num_old_max) * sizeof(float) + 
+                         neighb_num_max * 2 * sizeof(int) + 
+                         neighb_num_max * NEIGHB_CACHE_NUM * sizeof(ResultElement);
+
+    NewOldNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
+        (knn_graph_dev, global_locks_dev, vectors_dev, 
+         edges_dev_new, dest_dev_new, num_new_max,
+         edges_dev_old, dest_dev_old, num_old_max);
+
+    // LocalDistCompareKernel<<<grid_size, block_size>>>(knn_graph_dev, 
+    //                                                   global_locks_dev,
+    //                                                   vectors_dev,
+    //                                                   edges_dev_new, dest_dev_new, 
+    //                                                   edges_dev_old, dest_dev_old);
     cudaDeviceSynchronize();
 
     cuda_status = cudaGetLastError();
@@ -648,7 +962,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 11;
+        int iteration = 6;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
