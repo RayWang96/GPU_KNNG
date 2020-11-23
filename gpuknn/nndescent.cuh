@@ -1,7 +1,7 @@
 #ifndef XMUKNN_NNDESCENT_CUH
 #define XMUKNN_NNDESCENT_CUH
 #include "../xmuknn.h"
-
+#define LARGE_INT 0x3f3f3f3f
 using namespace std;
 using namespace xmuknn;
 

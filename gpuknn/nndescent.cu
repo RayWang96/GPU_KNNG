@@ -9,6 +9,7 @@
 #include <cstring>
 #include <tuple>
 #include <utility>
+#include <chrono>
 
 #include "result_element.cuh"
 #include "cuda_runtime.h"
@@ -23,7 +24,7 @@
 
 using namespace std;
 using namespace xmuknn;
-#define DEVICE_ID 3
+#define DEVICE_ID 0
 #define LARGE_INT 0x3f3f3f3f
 
 pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph, 
@@ -32,17 +33,13 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
     int sample_num = 30;
     Graph graph_new, graph_rnew, graph_old, graph_rold;
     graph_new = graph_rnew = graph_old = graph_rold = Graph(knn_graph.size());
-    vector<bool> visited(vecs_size);
-    vector<int> for_clear;
     for (int i = 0; i < knn_graph.size(); i++) {
         int cnt = 0;
         int last_cnt = 0;
         while (cnt < sample_num) {
             for (int j = 0; j < knn_graph[i].size(); j++) {
                 auto& item = knn_graph[i][j];
-                if (item.id >= LARGE_INT || visited[item.id]) continue;
-                visited[item.id] = 1;
-                for_clear.push_back(item.id);
+                if (item.id >= LARGE_INT) continue;
                 if (item.visited) {
                     graph_old[i].push_back(item.id);
                 }
@@ -58,11 +55,8 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             if (last_cnt == cnt) break;
             last_cnt = cnt;
         }
-        for (auto x:for_clear) {
-            visited[x] = 0;
-        }
-        for_clear.clear();
     }
+
     for (int i = 0; i < knn_graph.size(); i++) {
         for (int j = 0; j < graph_new[i].size(); j++) {
             auto& id = graph_new[i][j];
@@ -73,15 +67,19 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             graph_rold[id].push_back(i);
         }
     }
+
+    for (int i = 0; i < knn_graph.size(); i++) {
+        random_shuffle(graph_rnew[i].begin(), graph_rnew[i].end());
+        random_shuffle(graph_rold[i].begin(), graph_rold[i].end());
+    }
+
     for (int i = 0; i < knn_graph.size(); i++) {
         int cnt = 0;
         int last_cnt = 0;
         while (cnt < sample_num) {
             for (int j = 0; j < graph_rnew[i].size(); j++) {
                 int x = graph_rnew[i][j];
-                if (x >= LARGE_INT || visited[x]) continue;
-                visited[x] = 1;
-                for_clear.push_back(x);
+                if (x >= LARGE_INT) continue;
                 cnt++;
                 graph_new[i].push_back(x);
                 if (cnt >= sample_num) break;
@@ -94,9 +92,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         while (cnt < sample_num) {
             for (int j = 0; j < graph_rold[i].size(); j++) {
                 int x = graph_rold[i][j];
-                if (x >= LARGE_INT || visited[x]) continue;
-                visited[x] = 1;
-                for_clear.push_back(x);
+                if (x >= LARGE_INT) continue;
                 cnt++;
                 graph_old[i].push_back(x);
                 if (cnt >= sample_num) break;
@@ -104,10 +100,6 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             if (cnt == last_cnt) break;
             last_cnt = cnt;
         }
-        for (auto x:for_clear) {
-            visited[x] = 0;
-        }
-        for_clear.clear();
     }
     
     for (int i = 0; i < knn_graph.size(); i++) {
@@ -1015,28 +1007,31 @@ namespace gpuknn {
         }
 
         Graph newg, oldg;
+        float get_nb_graph_time = 0;
         for (int t = 0; t < iteration; t++) {
-            auto start = clock();
             cerr << "Start generating NBGraph." << endl;
+            auto start = chrono::steady_clock::now();
             tie(newg, oldg) = GetNBGraph(g, vectors, vecs_size, vecs_dim);
-            auto end = clock();
-            cerr << "GetNBGraph costs " << (1.0 * end - start) / CLOCKS_PER_SEC 
-                                        << endl;
+            auto end = chrono::steady_clock::now();
+            float tmp_time = 
+                (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;
+            get_nb_graph_time += tmp_time;
+            cerr << "GetNBGraph costs "
+                 << tmp_time
+                 << endl;
 
-            start = clock();
+            start = chrono::steady_clock::now();
             vector<pair<float, int>> tmp_result;
             // long long update_times = 0;
-            auto ss = clock();
             UpdateGraph(&g, vectors_dev, newg, oldg, k);
-            time_sum += clock() - ss;
-            end = clock();
-            // cerr << "update_times: " << update_times << endl;
-            cerr << "Iteration costs " << (1.0 * end - start) / CLOCKS_PER_SEC 
-                                       << endl;
-            cerr << "Kernel costs " << (1.0 * time_sum) / CLOCKS_PER_SEC << endl;
+            end = chrono::steady_clock::now();
+            cerr << "Kernel costs "
+                 << (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6
+                 << endl;
             cerr << endl;
-            time_sum = 0;
         }
+        // sift10k in cpu should be 0.6s;
+        cerr << "Get NB graph costs: " <<  get_nb_graph_time << endl; 
         return g;
     }
 }

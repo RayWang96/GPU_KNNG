@@ -2,6 +2,7 @@
 #include <iostream>
 #include <istream>
 #include <algorithm>
+#include <chrono>
 
 #include "xmuknn.h"
 #include "tools/filetool.hpp"
@@ -61,9 +62,9 @@ void TestCUDANNDescent() {
     int vecs_size, vecs_dim;
     FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
 
-    auto start = clock();
+    auto start = chrono::steady_clock::now();
     auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim);
-    auto end = clock();
+    auto end = chrono::steady_clock::now();
 
     out << knn_graph.size() << " " << k << endl;
     for (int i = 0; i < knn_graph.size(); i++) {
@@ -75,7 +76,9 @@ void TestCUDANNDescent() {
         } out << endl;
     }
     out.close();
-    cerr << "GPU NNDescent costs " << (1.0 * end - start) / CLOCKS_PER_SEC << " seconds" << endl;
+    cerr << "GPU NNDescent costs: "
+         << (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6
+         << endl;
     evaluate(out_path, ground_truth_path);
 }
 
