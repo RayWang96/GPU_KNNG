@@ -25,7 +25,7 @@ add_executable(gknng main.cu)
 
 set_property(TARGET gknng PROPERTY CUDA_SEPERABLE_COMPILATION ON)
 set_property(TARGET gknng PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-set_property(TARGET gknng PROPERTY CUDA_ARCHITECTURES 61)
+set_property(TARGET gknng PROPERTY CUDA_ARCHITECTURES 75)
 
 target_link_libraries(gknng PRIVATE knncuda ${CUBLAS_LIBRARIES})
  

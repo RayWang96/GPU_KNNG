@@ -395,7 +395,6 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
         distances[no] = sum;
     }
     __syncthreads();
-
     num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
     for (int i = 0; i < num_it; i++) {
         int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
@@ -409,7 +408,6 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
                  % NEIGHB_CACHE_NUM : NEIGHB_CACHE_NUM;
         int no = tx / NEIGHB_CACHE_NUM;
         if (no >= neighb_num) continue;
-        __syncthreads();
         int lists_per_it = block_dim_x;
         num_it2 = GetItNum(calc_num, lists_per_it); 
         for (int j = 0; j < num_it2; j++) {
@@ -429,8 +427,8 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
 
             InsertToLocalKNNList(list_x, list_size, re_xy, &local_locks[x]);
             InsertToLocalKNNList(list_y, list_size, re_yx, &local_locks[y]);
-            __syncthreads();
         }
+        __syncthreads();
         MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
                                        neighb_num, knn_graph, global_locks);
         __syncthreads();
@@ -576,7 +574,6 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
                         NEIGHB_NUM_PER_LIST % NEIGHB_CACHE_NUM : NEIGHB_CACHE_NUM;
         int no = tx / NEIGHB_CACHE_NUM;
         if (no >= neighb_num) continue;
-        __syncthreads();
         //Update the partial list
         int lists_per_it = block_dim_x;
         num_it2 = GetItNum(calc_num, lists_per_it); 
@@ -597,8 +594,8 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
             ResultElement re_yx = ResultElement(distances[no], neighbors[x]);
             InsertToLocalKNNList(list_x, list_size, re_xy, &local_locks[x]);
             InsertToLocalKNNList(list_y, list_size, re_yx, &local_locks[y]);
-            __syncthreads();
         }
+        __syncthreads();
         MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
                                        neighb_num, knn_graph, global_locks);
         __syncthreads();
@@ -954,7 +951,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 6;
+        int iteration = 10;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
