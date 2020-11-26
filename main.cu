@@ -82,14 +82,28 @@ void TestCUDANNDescent() {
     evaluate(out_path, ground_truth_path);
 }
 
+void TestCUDAASM() {
+    int x, pos;
+    while (cin >> x) {
+        cerr << "start" << endl;
+        for (int i = 0; i < 32; i++) {
+            TestASMKernel<<<dim3(1), dim3(1)>>> (x, i);
+            cudaDeviceSynchronize();
+        } cerr << endl;
+        cerr << "end" << endl;
+    }
+}
+
 void UnitTest() {
-    TestKNNListInsert();
+    // TestKNNListInsert();
+    // TestCUDAASM();
+    TestLocalListUpdate();
 }
 
 int main() {
-    // UnitTest();
+    UnitTest();
     //TestKNNAlgorithm();
-    TestCUDANNDescent();
+    // TestCUDANNDescent();
     // TestTiledDistanceCompare();
     //TestCUDADistance();
     //TestCUDASearch();

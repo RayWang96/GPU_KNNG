@@ -124,3 +124,31 @@ void TestTiledDistanceCompare() {
     delete[] distances;
     delete[] grd_distances;
 }
+
+__global__ void TestASMKernel(int x, int pos) {
+    printf("%d", Bfe(x, pos));
+}
+
+__global__ void TestLocalListUpdateKernel() {
+    __shared__ ResultElement knn_list[64 * NEIGHB_CACHE_NUM];
+    __shared__ float distances[496];
+    if (threadIdx.x == 0) {
+        for (int i = 0; i < 496; i++) {
+            distances[i] = i * 2333 % 496;
+        }
+        for (int i = 0; i < 64 * NEIGHB_CACHE_NUM; i++) {
+            knn_list[i] = ResultElement(1e9, LARGE_INT);
+        }
+    }
+    __syncthreads();
+    int tx = threadIdx.x;
+    UpdateLocalKNNLists(knn_list, tx / THREADS_PER_LIST + 20, 16, distances, 496);
+}
+
+void TestLocalListUpdate() {
+    TestLocalListUpdateKernel<<<dim3(1), dim3(16)>>>();
+    cudaDeviceSynchronize();
+
+    auto cuda_status = cudaGetLastError();
+    cerr << cudaGetErrorString(cuda_status) << endl;
+}
