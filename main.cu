@@ -101,9 +101,9 @@ void UnitTest() {
 }
 
 int main() {
-    UnitTest();
+    // UnitTest();
     //TestKNNAlgorithm();
-    // TestCUDANNDescent();
+    TestCUDANNDescent();
     // TestTiledDistanceCompare();
     //TestCUDADistance();
     //TestCUDASearch();
