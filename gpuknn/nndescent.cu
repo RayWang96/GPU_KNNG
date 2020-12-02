@@ -1049,7 +1049,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 10;
+        int iteration = 6;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
