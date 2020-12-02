@@ -37,10 +37,11 @@ __device__ int for_check = 0;
 pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph, 
                               const float *vectors, const int vecs_size, 
                               const int vecs_dim) {
+    float time1 = clock();
     int sample_num = SAMPLE_NUM;
     Graph graph_new, graph_rnew, graph_old, graph_rold;
     graph_new = graph_rnew = graph_old = graph_rold = Graph(knn_graph.size());
-
+    cerr << "Mark 1: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
     // #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         int cnt = 0;
@@ -65,6 +66,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             last_cnt = cnt;
         }
     }
+    cerr << "Mark 2: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
 
     for (int i = 0; i < knn_graph.size(); i++) {
         for (int j = 0; j < graph_new[i].size(); j++) {
@@ -86,12 +88,14 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             }
         }
     }
+    cerr << "Mark 3: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
 
     // #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         random_shuffle(graph_rnew[i].begin(), graph_rnew[i].end());
         random_shuffle(graph_rold[i].begin(), graph_rold[i].end());
     }
+    cerr << "Mark 4: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
 
     // #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
@@ -122,7 +126,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
             last_cnt = cnt;
         }
     }
-
+    cerr << "Mark 5: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
     // #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         sort(graph_new[i].begin(), graph_new[i].end());
@@ -133,6 +137,7 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         graph_old[i].erase(unique(graph_old[i].begin(), 
                                   graph_old[i].end()), graph_old[i].end());
     }
+    cerr << "Mark 6: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
     return make_pair(graph_new, graph_old);
 }
 
@@ -1004,7 +1009,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 6;
+        int iteration = 1;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
