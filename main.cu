@@ -38,19 +38,19 @@ void TestCUDANNDescent() {
     // string ground_truth_path 
     //     = "/mnt/d/cache/hwang_data/data/sift10k/sift10k_groundtruth_self.txt";
 
-    // string base_path 
-    //     = "/mnt/d/cache/hwang_data/data/sift100k/sift100k.txt";
-    // string out_path 
-    //     = "/mnt/d/cache/hwang_data/data/result/sift100k_knng_k30.txt";
-    // string ground_truth_path 
-    //     = "/mnt/d/cache/hwang_data/data/sift100k/sift100k_groundtruth_self.txt";
-
     string base_path 
-        = "/mnt/d/cache/hwang_data/data/sift1m/sift1m.txt";
+        = "/mnt/d/cache/hwang_data/data/sift100k/sift100k.txt";
     string out_path 
-        = "/mnt/d/cache/hwang_data/data/result/sift1m_knng_k30.txt";
+        = "/mnt/d/cache/hwang_data/data/result/sift100k_knng_k30.txt";
     string ground_truth_path 
-        = "/mnt/d/cache/hwang_data/data/sift1m/sift1m_gold_knn40_sorted.txt";
+        = "/mnt/d/cache/hwang_data/data/sift100k/sift100k_groundtruth_self.txt";
+
+    // string base_path 
+    //     = "/mnt/d/cache/hwang_data/data/sift1m/sift1m.txt";
+    // string out_path 
+    //     = "/mnt/d/cache/hwang_data/data/result/sift1m_knng_k30.txt";
+    // string ground_truth_path 
+    //     = "/mnt/d/cache/hwang_data/data/sift1m/sift1m_gold_knn40_sorted.txt";
 
     auto out = ofstream(out_path);
     if (!out.is_open()) {
@@ -82,22 +82,8 @@ void TestCUDANNDescent() {
     evaluate(out_path, ground_truth_path);
 }
 
-void TestCUDAASM() {
-    int x, pos;
-    while (cin >> x) {
-        cerr << "start" << endl;
-        for (int i = 0; i < 32; i++) {
-            TestASMKernel<<<dim3(1), dim3(1)>>> (x, i);
-            cudaDeviceSynchronize();
-        } cerr << endl;
-        cerr << "end" << endl;
-    }
-}
-
 void UnitTest() {
-    // TestKNNListInsert();
-    // TestCUDAASM();
-    TestLocalListUpdate();
+    TestKNNListInsert();
 }
 
 int main() {
