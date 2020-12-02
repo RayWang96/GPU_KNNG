@@ -124,3 +124,18 @@ void TestTiledDistanceCompare() {
     delete[] distances;
     delete[] grd_distances;
 }
+
+__global__ void TestASMKernel(int x, int pos) {
+    printf("%d", Bfe(x, pos));
+}
+
+__global__ void TestLocalListUpdateKernel() {
+}
+
+void TestLocalListUpdate() {
+    TestLocalListUpdateKernel<<<dim3(1), dim3(16)>>>();
+    cudaDeviceSynchronize();
+
+    auto cuda_status = cudaGetLastError();
+    cerr << cudaGetErrorString(cuda_status) << endl;
+}
