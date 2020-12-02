@@ -209,10 +209,10 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
         // printf("%d %f %d\n", lane_id, sort_elem.distance, sort_elem.label);
         BitonicSort(&sort_elem, lane_id);
         int offset;
-        for (offset = 0; offset < THREADS_PER_LIST; offset++) {
+        for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
             if (lane_id == THREADS_PER_LIST - 1) {
-                if (sort_elem < knn_list[pos_in_lists + NEIGHB_CACHE_NUM - 1]) {
+                if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
@@ -226,14 +226,12 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
                                        1, THREADS_PER_LIST);
             sort_elem = tmp;
         }
-        if (lane_id >= offset && lane_id < offset + NEIGHB_CACHE_NUM) {
-            knn_list[pos_in_lists + lane_id - offset] = sort_elem;
-        }
-        if (lane_id < NEIGHB_CACHE_NUM) {
-            sort_elem = knn_list[pos_in_lists + lane_id];
-        } else {
-            sort_elem.distance = 1e10;
-            sort_elem.label = 12345678;
+        if (lane_id < offset) {
+            if (lane_id < NEIGHB_CACHE_NUM) {
+                sort_elem = knn_list[pos_in_lists + lane_id];
+            } else {
+                sort_elem = ResultElement(1e10, 12345678);
+            }        
         }
         BitonicSort(&sort_elem, lane_id);
         if (lane_id < NEIGHB_CACHE_NUM)
@@ -254,10 +252,10 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
         }
         BitonicSort(&sort_elem, lane_id);
         int offset;
-        for (offset = 0; offset < THREADS_PER_LIST; offset++) {
+        for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
             if (lane_id == THREADS_PER_LIST - 1) {
-                if (sort_elem < knn_list[pos_in_lists + NEIGHB_CACHE_NUM - 1]) {
+                if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
@@ -271,14 +269,12 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
                                        1, THREADS_PER_LIST);
             sort_elem = tmp;
         }
-        if (lane_id >= offset && lane_id < offset + NEIGHB_CACHE_NUM) {
-            knn_list[pos_in_lists + lane_id - offset] = sort_elem;
-        }
-        if (lane_id < NEIGHB_CACHE_NUM) {
-            sort_elem = knn_list[pos_in_lists + lane_id];
-        } else {
-            sort_elem.distance = 1e10;
-            sort_elem.label = 88888888;
+        if (lane_id < offset) {
+            if (lane_id < NEIGHB_CACHE_NUM) {
+                sort_elem = knn_list[pos_in_lists + lane_id];
+            } else {
+                sort_elem = ResultElement(1e10, 12345678);
+            }
         }
         BitonicSort(&sort_elem, lane_id);
         if (lane_id < NEIGHB_CACHE_NUM)
@@ -319,10 +315,10 @@ __device__ void UpdateLocalNewKNNLists(ResultElement *knn_list,
         // printf("%d %f %d\n", lane_id, sort_elem.distance, sort_elem.label);
         BitonicSort(&sort_elem, lane_id);
         int offset;
-        for (offset = 0; offset < THREADS_PER_LIST; offset++) {
+        for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
             if (lane_id == THREADS_PER_LIST - 1) {
-                if (sort_elem < knn_list[pos_in_lists + NEIGHB_CACHE_NUM - 1]) {
+                if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
@@ -336,14 +332,12 @@ __device__ void UpdateLocalNewKNNLists(ResultElement *knn_list,
                                        1, THREADS_PER_LIST);
             sort_elem = tmp;
         }
-        if (lane_id >= offset && lane_id < offset + NEIGHB_CACHE_NUM) {
-            knn_list[pos_in_lists + lane_id - offset] = sort_elem;
-        }
-        if (lane_id < NEIGHB_CACHE_NUM) {
-            sort_elem = knn_list[pos_in_lists + lane_id];
-        } else {
-            sort_elem.distance = 1e10;
-            sort_elem.label = 12345678;
+        if (lane_id < offset) {
+            if (lane_id < NEIGHB_CACHE_NUM) {
+                sort_elem = knn_list[pos_in_lists + lane_id];
+            } else {
+                sort_elem = ResultElement(1e10, 12345678);
+            }
         }
         BitonicSort(&sort_elem, lane_id);
         if (lane_id < NEIGHB_CACHE_NUM)
@@ -374,43 +368,16 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
         int current_pos = head_pos + no * num_old;
         if (current_pos < distances_num) {
             sort_elem.distance = distances[current_pos];
-
-            // int x = old_neighbs[list_id - num_new];
-            // int y = sort_elem.label;
-            // float sum = 0;
-            // for (int i = 0; i < VEC_DIM; i++) {
-            //     float diff = vectors[x * VEC_DIM + i] - vectors[y * VEC_DIM + i];
-            //     sum += diff * diff;
-            // }
-            // if (fabs(sum - sort_elem.distance) > 1e-5 && x != y) {
-            //     int flag = atomicCAS(&for_check, 0, 1);
-            //     if (!flag) {
-            //         for (int i = 0; i < num_new; i++) {
-            //             printf("%d ", new_neighbs[i]);
-            //         } printf("\n");
-            //         for (int i = 0; i < num_old; i++) {
-            //             printf("%d ", old_neighbs[i]);
-            //         } printf("\n");       
-            //         printf("check %d %d %d %d %f %f\n", 
-            //                list_id, lane_id, x, y, sum, sort_elem.distance);
-            //         for (int i = 0; i < num_new; i++) {
-            //             for (int j = 0; j < num_old; j++) {
-            //                 printf("%.3f ", distances[i * num_old + j]);
-            //             } printf("\n");
-            //         }
-            //     }
-            //     // assert(fabs(sum - sort_elem.distance) < 1e-5);
-            // }
         } else {
             sort_elem.distance = 1e10;
             sort_elem.label = 55555555;
         }
         BitonicSort(&sort_elem, lane_id);
         int offset;
-        for (offset = 0; offset < THREADS_PER_LIST; offset++) {
+        for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
             if (lane_id == THREADS_PER_LIST - 1) {
-                if (sort_elem < knn_list[pos_in_lists + NEIGHB_CACHE_NUM - 1]) {
+                if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
@@ -424,14 +391,12 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
                                        1, THREADS_PER_LIST);
             sort_elem = tmp;
         }
-        if (lane_id >= offset && lane_id < offset + NEIGHB_CACHE_NUM) {
-            knn_list[pos_in_lists + lane_id - offset] = sort_elem;
-        }
-        if (lane_id < NEIGHB_CACHE_NUM) {
-            sort_elem = knn_list[pos_in_lists + lane_id];
-        } else {
-            sort_elem.distance = 1e10;
-            sort_elem.label = 88888888;
+        if (lane_id < offset) {
+            if (lane_id < NEIGHB_CACHE_NUM) {
+                sort_elem = knn_list[pos_in_lists + lane_id];
+            } else {
+                sort_elem = ResultElement(1e10, 12345678);
+            }
         }
         BitonicSort(&sort_elem, lane_id);
         if (lane_id < NEIGHB_CACHE_NUM)
@@ -671,16 +636,6 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
             if (list_id >= neighb_num) continue;
             UpdateLocalKNNLists(knn_graph_cache, neighbors, 
                                 list_id, list_size, distances, calc_num);
-            // for (int j = 0; j < num_it2; j++) {
-            //     int pos = j * block_dim_x + tx;
-            //     if (pos < neighb_num * NEIGHB_CACHE_NUM) {
-            //         int x = pos / NEIGHB_CACHE_NUM;
-            //         int y = knn_graph_cache[pos].label;
-            //         if (x > y) {
-            //             distances[x * (x - 1) / 2 + y] = 1e10;
-            //         }
-            //     }
-            // }
         }
         __syncthreads();
         MergeLocalGraphWithGlobalGraph(knn_graph_cache, NEIGHB_CACHE_NUM, neighbors,
@@ -1049,7 +1004,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 6;
+        int iteration = 10;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
