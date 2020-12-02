@@ -23,15 +23,18 @@ namespace xmuknn {
     extern long long dist_calc_count;
     extern std::uniform_real_distribution<float> unif;
     extern std::default_random_engine rand_engine;
-    static void GenerateRandomSequence(std::vector<int> &result, const int &need_number, const int max_value) {
+    static void GenerateRandomSequence(std::vector<int> &result, const int &need_number, const int max_value, const std::vector<int> &exclusion) {
         std::vector<bool> visited(max_value);
+        for (auto x:exclusion) {
+            visited[x] = true;
+        }
         result = std::vector<int>(need_number);
         for (int i = 0; i < need_number; i++) {
             int num = rand_engine() % max_value;
             while(visited[num]) {
-                visited[num] = true;
                 num = rand_engine() % max_value;
             }
+            visited[num] = true;
             result[i] = num;
         }
 

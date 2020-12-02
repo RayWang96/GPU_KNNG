@@ -125,7 +125,7 @@ __device__ void Swap(int &a, int &b) {
 }
 
 const int VEC_DIM = 128;
-const int NEIGHB_NUM_PER_LIST = 30;
+const int NEIGHB_NUM_PER_LIST = 40;
 const int VECS_NUM_PER_BLOCK = NEIGHB_NUM_PER_LIST * 2;
 const int MAX_CALC_NUM = (VECS_NUM_PER_BLOCK * (VECS_NUM_PER_BLOCK-1)) / 2;
 const int NEIGHB_CACHE_NUM = 16;
@@ -951,7 +951,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 10;
+        int iteration = 6;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
@@ -970,26 +970,10 @@ namespace gpuknn {
         vector<int> tmp_vec;
 
         for (int i = 0; i < vecs_size; i++) {
-            xmuknn::GenerateRandomSequence(tmp_vec, k, vecs_size);
+            vector<int> exclusion = {i};
+            xmuknn::GenerateRandomSequence(tmp_vec, k, vecs_size, exclusion);
             for (int j = 0; j < k; j++) {
                 int nb_id = tmp_vec[j];
-                if (nb_id == i) {
-                    int flag = 1;
-                    while (flag) {
-                        flag = 0;
-                        nb_id++;
-                        nb_id %= vecs_size;
-                        for (int x : tmp_vec) {
-                            if (x == nb_id) {
-                                flag = 1;
-                                break;
-                            }
-                        }
-                        if (!flag) {
-                            tmp_vec[j] = nb_id;
-                        }
-                    }
-                }
                 g[i].emplace_back(nb_id, false, 
                                   GetDistance(vectors + (size_t)i * vecs_dim, 
                                               vectors + (size_t)nb_id * vecs_dim,
@@ -998,13 +982,20 @@ namespace gpuknn {
         }
         for (int i = 0; i < g.size(); i++) {
             sort(g[i].begin(), g[i].end(), [](NNDItem a, NNDItem b) {
-                    if (fabs(a.distance - b.distance) < 1e10) return a.id < b.id;
+                    if (fabs(a.distance - b.distance) < 1e-10) return a.id < b.id;
                     return a.distance < b.distance;
                 });
+            g[i].erase(unique(g[i].begin(), g[i].end()), g[i].end());
+            if (g[i].size() != k) {
+                cerr << i << " " << g[i].size() << " " << k << endl;
+                assert(g[i].size() == k);
+            }
         }
 
+        float kernel_costs = 0;
         Graph newg, oldg;
         float get_nb_graph_time = 0;
+        auto sum_start = chrono::steady_clock::now();
         for (int t = 0; t < iteration; t++) {
             cerr << "Start generating NBGraph." << endl;
             auto start = chrono::steady_clock::now();
@@ -1022,13 +1013,19 @@ namespace gpuknn {
             // long long update_times = 0;
             UpdateGraph(&g, vectors_dev, newg, oldg, k);
             end = chrono::steady_clock::now();
+            float kernel_tmp_costs = (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;
+            kernel_costs += kernel_tmp_costs;
             cerr << "Kernel costs "
-                 << (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6
+                 << kernel_tmp_costs
                  << endl;
             cerr << endl;
         }
+        auto sum_end = chrono::steady_clock::now();
+        float sum_costs = (float)chrono::duration_cast<std::chrono::microseconds>(sum_end - sum_start).count() / 1e6;
         // sift10k in cpu should be 0.6s;
-        cerr << "Get NB graph costs: " <<  get_nb_graph_time << endl; 
+        cerr << "All kernel costs: " << kernel_costs << endl;
+        cerr << "Get NB graph costs: " << get_nb_graph_time << endl; 
+        cerr << "All procedure costs: " << sum_costs << endl;
         return g;
     }
 }
