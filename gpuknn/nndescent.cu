@@ -10,6 +10,7 @@
 #include <tuple>
 #include <utility>
 #include <chrono>
+#include <mutex> 
 
 #include "result_element.cuh"
 #include "cuda_runtime.h"
@@ -34,99 +35,109 @@ const int THREADS_PER_LIST = 32;
 const int SAMPLE_NUM = 30;
 __device__ int for_check = 0;
 
-pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph, 
-                              const float *vectors, const int vecs_size, 
-                              const int vecs_dim) {
-    float time1 = clock();
+void GetNBGraph(Graph *graph_new_ptr,
+                Graph *graph_old_ptr,
+                vector<vector<gpuknn::NNDItem>>& knn_graph, 
+                const float *vectors, const int vecs_size, 
+                const int vecs_dim) {
+    auto time1 = chrono::steady_clock::now();
     int sample_num = SAMPLE_NUM;
-    Graph graph_new, graph_rnew, graph_old, graph_rold;
+    Graph &graph_new = *graph_new_ptr;
+    Graph &graph_old = *graph_old_ptr;
+    Graph graph_rnew, graph_rold;
     graph_new = graph_rnew = graph_old = graph_rold = Graph(knn_graph.size());
-    cerr << "Mark 1: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
-    // #pragma omp parallel for
+    vector<mutex> mtx(vecs_size);
+
+    #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         int cnt = 0;
-        int last_cnt = 0;
-        while (cnt < sample_num) {
-            for (int j = 0; j < knn_graph[i].size(); j++) {
-                auto& item = knn_graph[i][j];
-                assert(item.id < vecs_size);
-                if (item.visited) {
-                    graph_old[i].push_back(item.id);
-                }
-                else {
-                    if (cnt < sample_num) {
-                        graph_new[i].push_back(item.id);
-                        cnt++;
-                        item.visited = true;
-                    }
-                }
-                if (cnt >= sample_num) break;
+        for (int j = 0; j < knn_graph[i].size(); j++) {
+            auto& item = knn_graph[i][j];
+            if (item.visited) {
+                graph_old[i].push_back(item.id);
             }
-            if (last_cnt == cnt) break;
-            last_cnt = cnt;
+            else {
+                if (cnt < sample_num) {
+                    graph_new[i].push_back(item.id);
+                    cnt++;
+                    item.visited = true;
+                }
+            }
+            if (cnt >= sample_num) break;
         }
     }
-    cerr << "Mark 2: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
+    // auto time2 = chrono::steady_clock::now();
+    // cerr << "Mark 2: " << (float)chrono::duration_cast<std::chrono::microseconds>(time2 - time1).count() / 1e6 << endl;
 
+    #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         for (int j = 0; j < graph_new[i].size(); j++) {
             auto& id = graph_new[i][j];
-            if (id < vecs_size)
-                graph_rnew[id].push_back(i);
-            else {
-                printf("check %d %d\n", i, id);
-                assert(false);
-            }
+            mtx[id].lock();
+            graph_rnew[id].push_back(i);
+            mtx[id].unlock();
         }
         for (int j = 0; j < graph_old[i].size(); j++) {
             auto& id = graph_old[i][j];
-            if (id < vecs_size)
-                graph_rold[id].push_back(i);
-            else {
-                printf("check %d %d\n", i, id);
-                assert(false);
-            }
+            mtx[id].lock();
+            graph_rold[id].push_back(i);
+            mtx[id].unlock();
         }
     }
-    cerr << "Mark 3: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
+
+    // auto time3 = chrono::steady_clock::now();
+    // cerr << "Mark 3: " << (float)chrono::duration_cast<std::chrono::microseconds>(time3 - time1).count() / 1e6 << endl;
 
     // #pragma omp parallel for
-    for (int i = 0; i < knn_graph.size(); i++) {
-        random_shuffle(graph_rnew[i].begin(), graph_rnew[i].end());
-        random_shuffle(graph_rold[i].begin(), graph_rold[i].end());
-    }
-    cerr << "Mark 4: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
+    // for (int i = 0; i < knn_graph.size(); i++) {
+    //     random_shuffle(graph_rnew[i].begin(), graph_rnew[i].end());
+    //     random_shuffle(graph_rold[i].begin(), graph_rold[i].end());
+    // }
 
+    // auto time4 = chrono::steady_clock::now();
+    // cerr << "Mark 4: " << (float)chrono::duration_cast<std::chrono::microseconds>(time4 - time1).count() / 1e6 << endl;
+
+    vector<bool> visited(vecs_size);
     // #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         int cnt = 0;
-        int last_cnt = 0;
-        while (cnt < sample_num) {
-            for (int j = 0; j < graph_rnew[i].size(); j++) {
-                int x = graph_rnew[i][j];
-                assert(x < vecs_size);
+        for (int j = 0; j < graph_new[i].size(); j++) {
+            visited[graph_new[i][j]] = true;
+        }
+        for (int j = 0; j < graph_old[i].size(); j++) {
+            visited[graph_old[i][j]] = true;
+        }
+        for (int j = 0; j < graph_rnew[i].size(); j++) {
+            int x = graph_rnew[i][j];
+            if (!visited[x]) {
                 cnt++;
+                visited[x] = true;
                 graph_new[i].push_back(x);
                 if (cnt >= sample_num) break;
             }
-            if (cnt == last_cnt) break;
-            last_cnt = cnt;
         }
         cnt = 0;
-        last_cnt = 0;
-        while (cnt < sample_num) {
-            for (int j = 0; j < graph_rold[i].size(); j++) {
-                int x = graph_rold[i][j];
-                assert(x < vecs_size);
+        for (int j = 0; j < graph_rold[i].size(); j++) {
+            int x = graph_rold[i][j];
+            if (!visited[x]) {
                 cnt++;
+                visited[x] = true;
                 graph_old[i].push_back(x);
                 if (cnt >= sample_num) break;
             }
-            if (cnt == last_cnt) break;
-            last_cnt = cnt;
+        }
+        for (int j = 0; j < graph_new[i].size(); j++) {
+            visited[graph_new[i][j]] = false;
+        }
+        for (int j = 0; j < graph_old[i].size(); j++) {
+            visited[graph_old[i][j]] = false;
         }
     }
-    cerr << "Mark 5: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
+
+    
+    // auto time5 = chrono::steady_clock::now();
+    // cerr << "Mark 5: " << (float)chrono::duration_cast<std::chrono::microseconds>(time5 - time1).count() / 1e6 << endl;
+
     // #pragma omp parallel for
     for (int i = 0; i < knn_graph.size(); i++) {
         sort(graph_new[i].begin(), graph_new[i].end());
@@ -137,8 +148,9 @@ pair<Graph, Graph> GetNBGraph(vector<vector<gpuknn::NNDItem>>& knn_graph,
         graph_old[i].erase(unique(graph_old[i].begin(), 
                                   graph_old[i].end()), graph_old[i].end());
     }
-    cerr << "Mark 6: " << ((float)clock() - time1) / CLOCKS_PER_SEC << endl;
-    return make_pair(graph_new, graph_old);
+    // auto time6 = chrono::steady_clock::now();
+    // cerr << "Mark 6: " << (float)chrono::duration_cast<std::chrono::microseconds>(time6 - time1).count() / 1e6 << endl;
+    return;
 }
 
 __device__ int GetItNum(const int sum_num, const int num_per_it) {
@@ -704,14 +716,7 @@ __device__ void GetNewOldDistances(float *distances, const float *vectors,
             }
             __syncthreads();
         }
-        if (distance == 0.0) {
-            int pos = (row_new + t_row) * num_old + row_old + t_col;
-            if (new_neighbors[row_new + t_row] == old_neighbors[row_old + t_col])
-                distances[pos] = 1e10;
-            else
-                distances[pos] = 0;
-        }
-        else if (distance != -1.0) {
+        if (distance != -1.0) {
             distances[(row_new + t_row) * num_old + row_old + t_col] = distance;
         }
     }
@@ -1009,7 +1014,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 1;
+        int iteration = 6;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
@@ -1042,12 +1047,7 @@ namespace gpuknn {
             sort(g[i].begin(), g[i].end(), [](NNDItem a, NNDItem b) {
                     if (fabs(a.distance - b.distance) < 1e-10) return a.id < b.id;
                     return a.distance < b.distance;
-                });
-            g[i].erase(unique(g[i].begin(), g[i].end()), g[i].end());
-            if (g[i].size() != k) {
-                cerr << i << " " << g[i].size() << " " << k << endl;
-                assert(g[i].size() == k);
-            }
+                 });
         }
 
         float kernel_costs = 0;
@@ -1057,7 +1057,7 @@ namespace gpuknn {
         for (int t = 0; t < iteration; t++) {
             cerr << "Start generating NBGraph." << endl;
             auto start = chrono::steady_clock::now();
-            tie(newg, oldg) = GetNBGraph(g, vectors, vecs_size, vecs_dim);
+            GetNBGraph(&newg, &oldg, g, vectors, vecs_size, vecs_dim);
             auto end = chrono::steady_clock::now();
             float tmp_time = 
                 (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;

@@ -16,6 +16,10 @@ namespace gpuknn {
         const bool operator == (const NNDItem &other) const {
             return (this->id == other.id) && (fabs(this->distance - other.distance) < 1e-9);
         }
+        const bool operator < (const NNDItem &other) const {
+            if (fabs(this->distance - other.distance) < 1e-9) return this->id < other.id;
+            return this->distance < other.distance;
+        }
     };
 
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim);
