@@ -1051,6 +1051,7 @@ namespace gpuknn {
             }
         }
 
+        #pragma omp parallel for
         for (int i = 0; i < g.size(); i++) {
             sort(g[i].begin(), g[i].end(), [](NNDItem a, NNDItem b) {
                     if (fabs(a.distance - b.distance) < 1e-10) return a.id < b.id;
