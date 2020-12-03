@@ -34,21 +34,21 @@ void TestCUDANNDescent() {
     // string base_path 
     //     = "/mnt/d/cache/hwang_data/data/sift10k/sift10k.txt";
     // string out_path 
-    //     = "/mnt/d/cache/hwang_data/data/result/sift10k_knng_k32.txt";
+    //     = "/home/hwang/data/result/sift10k_knng_k32.txt";
     // string ground_truth_path 
     //     = "/mnt/d/cache/hwang_data/data/sift10k/sift10k_groundtruth_self.txt";
 
     string base_path 
         = "/mnt/d/cache/hwang_data/data/sift100k/sift100k.txt";
     string out_path 
-        = "/mnt/d/cache/hwang_data/data/result/sift100k_knng_k30.txt";
+        = "/home/hwang/data/result/sift100k_knng_k30.txt";
     string ground_truth_path 
         = "/mnt/d/cache/hwang_data/data/sift100k/sift100k_groundtruth_self.txt";
 
     // string base_path 
     //     = "/mnt/d/cache/hwang_data/data/sift1m/sift1m.txt";
     // string out_path 
-    //     = "/mnt/d/cache/hwang_data/data/result/sift1m_knng_k30.txt";
+    //     = "/home/hwang/data/result/sift1m_knng_k30.txt";
     // string ground_truth_path 
     //     = "/mnt/d/cache/hwang_data/data/sift1m/sift1m_gold_knn40_sorted.txt";
 
