@@ -1037,12 +1037,20 @@ namespace gpuknn {
             xmuknn::GenerateRandomSequence(tmp_vec, k, vecs_size, exclusion);
             for (int j = 0; j < k; j++) {
                 int nb_id = tmp_vec[j];
-                g[i].emplace_back(nb_id, false, 
-                                  GetDistance(vectors + (size_t)i * vecs_dim, 
-                                              vectors + (size_t)nb_id * vecs_dim,
-                                              vecs_dim));
+                g[i].emplace_back(nb_id, false, 1e10);
             }
         }
+
+        #pragma omp parallel for
+        for (int i = 0; i < vecs_size; i++) {
+            for (int j = 0; j < k; j++) {
+                g[i][j].distance = 
+                    GetDistance(vectors + (size_t)i * vecs_dim, 
+                                vectors + (size_t)g[i][j].id * vecs_dim,
+                                vecs_dim);
+            }
+        }
+
         for (int i = 0; i < g.size(); i++) {
             sort(g[i].begin(), g[i].end(), [](NNDItem a, NNDItem b) {
                     if (fabs(a.distance - b.distance) < 1e-10) return a.id < b.id;
