@@ -32,7 +32,7 @@ const int NEIGHB_NUM_PER_LIST = 40;
 const int NEIGHB_CACHE_NUM = 16;
 const int TILE_WIDTH = 16;
 const int THREADS_PER_LIST = 32;
-const int SAMPLE_NUM = 30;
+const int SAMPLE_NUM = 25;
 __device__ int for_check = 0;
 
 void GetNBGraph(Graph *graph_new_ptr,
@@ -562,29 +562,26 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     extern __shared__ char buffer[];
 
     __shared__ float *shared_vectors, *distances;
-    __shared__ int *neighbors, *local_locks;
+    __shared__ int *neighbors;
     __shared__ ResultElement *knn_graph_cache;
     __shared__ int pos_gnew, num_new;
 
     int tx = threadIdx.x;
     if (tx == 0) {
         shared_vectors = (float *)buffer;
+        knn_graph_cache = 
+            (ResultElement *)buffer;
+        size_t offset = max(num_new_max * VEC_DIM * sizeof(float),
+                            num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement));
         distances = 
-            (float *)((char *)buffer + num_new_max * VEC_DIM * sizeof(float));
+            (float *)((char *)buffer + offset);
         neighbors = 
             (int *)((char *)distances + (num_new_max * (num_new_max - 1) / 2) * sizeof(float));
-        local_locks = (int *)((char *)neighbors + num_new_max * sizeof(int));
-        knn_graph_cache = 
-            (ResultElement *)((char *)local_locks + num_new_max * sizeof(int));
     }
     __syncthreads();
 
     int list_id = blockIdx.x;
     int block_dim_x = blockDim.x;
-
-    if (tx < num_new_max) {
-        local_locks[tx] = 0;
-    }
 
     if (tx == 0) {
         int next_pos = edges_new[list_id + 1];
@@ -613,12 +610,6 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     num_it = GetItNum(calc_num, block_dim_x);
     if (blockIdx.x == 0 && threadIdx.x == 0) {
         printf("check calc. num. %d %d\n", neighb_num, calc_num);
-    }
-    for (int i = 0; i < num_it; i++) {
-        int x = i * block_dim_x + tx;
-        if (x < calc_num) {
-            distances[x] = 0;
-        }
     }
     __syncthreads();
     for (int i = 0; i < num_it; i++) {
@@ -731,7 +722,7 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
     extern __shared__ char buffer[];
 
     __shared__ float *distances;
-    __shared__ int *neighbors, *local_locks;
+    __shared__ int *neighbors;
     __shared__ ResultElement *knn_graph_cache;
 
     __shared__ int pos_gnew, pos_gold, num_new, num_old;
@@ -742,19 +733,13 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
         distances = (float *)buffer;
         neighbors = 
             (int *)((char *)buffer + (num_new_max * num_old_max) * sizeof(float));
-        local_locks = 
-            (int *)((char *)neighbors + neighb_num_max * sizeof(int));
         knn_graph_cache =
-            (ResultElement *)((char *)local_locks + neighb_num_max * sizeof(int));
+            (ResultElement *)((char *)neighbors + neighb_num_max * sizeof(int));
     }
     __syncthreads();
 
     int list_id = blockIdx.x;
     int block_dim_x = blockDim.x;
-
-    if (tx < neighb_num_max) {
-        local_locks[tx] = 0;
-    }
 
     if (tx == 0) {
         int next_pos = edges_new[list_id + 1];
@@ -958,11 +943,12 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     const int num_new_max = GetMaxListSize(newg);
     const int num_old_max = GetMaxListSize(oldg);
     size_t shared_memory_size = 
-        num_new_max * VEC_DIM * sizeof(float) + 
+        max(num_new_max * VEC_DIM * sizeof(float),
+            num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement)) + 
         (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
-        num_new_max * 2 * sizeof(int) + 
-        num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement);
+        num_new_max * sizeof(int);
 
+    cerr << "Shmem kernel1 costs: " << shared_memory_size << endl;
     NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
         (knn_graph_dev, global_locks_dev, vectors_dev,
          edges_dev_new, dest_dev_new, num_new_max);
@@ -970,9 +956,10 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     block_size = dim3(TILE_WIDTH * TILE_WIDTH);
     int neighb_num_max = num_new_max + num_old_max;
     shared_memory_size = (num_new_max * num_old_max) * sizeof(float) + 
-                         neighb_num_max * 2 * sizeof(int) + 
+                         neighb_num_max * sizeof(int) + 
                          neighb_num_max * NEIGHB_CACHE_NUM * sizeof(ResultElement);
 
+    cerr << "Shmem kernel2 costs: " << shared_memory_size << endl;
     NewOldNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
         (knn_graph_dev, global_locks_dev, vectors_dev, 
          edges_dev_new, dest_dev_new, num_new_max,
