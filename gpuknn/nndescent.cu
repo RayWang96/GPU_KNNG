@@ -740,15 +740,12 @@ const int COLS_PER_IT = BLOCK_COL_WARPS * WMMA_K;
 
 using namespace nvcuda;
 // threads = 4 * 32 = 128
-__device__ void GetDistancesWMMA(float *distances, 
+__device__ void GetDistancesWMMA(float *distances, float *distances_cache,
+                                 float *squa_suma_cache, float *squa_sumb_cache,
                                  const float *vectors,
                                  const int *new_neighbors, const int num_new,
                                  const int *old_neighbors, const int num_old,
-                                 half shmem_a[][WMMA_K], 
-                                 half shmem_b[][WMMA_K]) {
-    __shared__ float distances_cache[4 * 4 * 16 * 16];
-    __shared__ float squa_suma_cache[64];
-    __shared__ float squa_sumb_cache[64];
+                                 half *shmem_a, half *shmem_b) {
 
     const int tx = threadIdx.x;
     const int warp_id = tx / warpSize;
@@ -785,25 +782,25 @@ __device__ void GetDistancesWMMA(float *distances,
                         if (global_ay < num_new && global_x < VEC_DIM) {
                             int pos = new_neighbors[global_ay];
                             float val = vectors[pos * VEC_DIM + global_x];
-                            shmem_a[local_ay][local_x] = (half)val;
+                            shmem_a[local_ay * WMMA_K + local_x] = (half)val;
                         } else {
-                            shmem_a[local_ay][local_x] = (half)0.0;
+                            shmem_a[local_ay * WMMA_K + local_x] = (half)0.0;
                         }
                         if (global_by < num_old && global_x < VEC_DIM) {
                             int pos = old_neighbors[global_by];
                             float val = vectors[pos * VEC_DIM + global_x];
-                            shmem_b[local_by][local_x] = (half)val;
+                            shmem_b[local_by * WMMA_K + local_x] = (half)val;
                         } else {
-                            shmem_b[local_by][local_x] = (half)0.0;
+                            shmem_b[local_by * WMMA_K + local_x] = (half)0.0;
                         }
                     }
                 } 
                 __syncthreads();
                 if (lane_id < 16) {
                     for (int t = 0; t < WMMA_K; t++) {
-                        float val = (float)shmem_a[warp_id * 16 + lane_id][t];
+                        float val = (float)shmem_a[warp_id * 16 + lane_id * WMMA_K + t];
                         squa_suma += val * val;
-                        val = (float)shmem_b[warp_id * 16 + lane_id][t];
+                        val = (float)shmem_b[warp_id * 16 + lane_id * WMMA_K + t];
                         squa_sumb += val * val;
                     }
                 }
@@ -844,11 +841,11 @@ __device__ void GetDistancesWMMA(float *distances,
                 // }
                 // __syncthreads();
                 wmma::load_matrix_sync(a_frag, 
-                                       &shmem_a[warp_id * M][0],
+                                       &shmem_a[warp_id * M * WMMA_K],
                                        COLS_PER_IT);
                 for (int t = 0; t < BLOCK_ROW_WARPS; t++) {
                     wmma::load_matrix_sync(b_frag, 
-                                           &shmem_b[t * N][0],
+                                           &shmem_b[t * N * WMMA_K],
                                            COLS_PER_IT);
                     wmma::mma_sync(acc_frag[t], a_frag, b_frag, acc_frag[t]);
                 }
@@ -1008,11 +1005,13 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
     __shared__ float *distances;
     __shared__ int *neighbors, *local_locks;
     __shared__ ResultElement *knn_graph_cache;
-
+    __shared__ float distances_cache[4 * 4 * 16 * 16];
+    __shared__ float squa_suma_cache[64];
+    __shared__ float squa_sumb_cache[64];
     __shared__ int pos_gnew, pos_gold, num_new, num_old;
 
-    __shared__ half shmem_a[BLOCK_ROW_WARPS * WMMA_M][BLOCK_COL_WARPS * WMMA_K];
-    __shared__ half shmem_b[BLOCK_ROW_WARPS * WMMA_N][BLOCK_COL_WARPS * WMMA_K];
+    __shared__ half shmem_a[BLOCK_ROW_WARPS * WMMA_M * BLOCK_COL_WARPS * WMMA_K];
+    __shared__ half shmem_b[BLOCK_ROW_WARPS * WMMA_N * BLOCK_COL_WARPS * WMMA_K];
 
     int neighb_num_max = num_new_max + num_old_max;
     int tx = threadIdx.x;
@@ -1058,7 +1057,8 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
         printf("new-old calc. num. %d %d %d\n", num_new, num_old, neighb_num);
     } __syncthreads();
 
-    GetDistancesWMMA(distances, vectors, 
+    GetDistancesWMMA(distances, distances_cache, 
+                     squa_suma_cache, squa_sumb_cache, vectors,
                      neighbors, num_new, neighbors + num_new, num_old,
                      shmem_a, shmem_b);
     __syncthreads();
