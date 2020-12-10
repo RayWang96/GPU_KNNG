@@ -19,7 +19,7 @@ find_package(cuBLAS)
 
 # set(CMAKE_VERBOSE_MAKEFILE ON)
 target_compile_features(knncuda PUBLIC cxx_std_11)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -Xcompiler -fopenmp")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -arch=sm_75 -Xcompiler -fopenmp")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -O3 -pthread -fopenmp")
 add_executable(gknng main.cu)
 

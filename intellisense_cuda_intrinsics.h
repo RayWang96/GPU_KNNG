@@ -180,4 +180,12 @@ template <typename T>
 T __shfl_down_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
 template <typename T>
 T __shfl_xor_sync(unsigned mask, T var, int laneMask, int width = warpSize) {};
+
+int __syncthreads() {};
+int __nanosleep(const int ns) {};
+int __threadfence() {};
+
+namespace nvcuda {
+
+}
 #endif

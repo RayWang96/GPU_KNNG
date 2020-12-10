@@ -11,6 +11,7 @@
 #include <utility>
 #include <chrono>
 #include <mutex> 
+#include <mma.h>
 
 #include "result_element.cuh"
 #include "cuda_runtime.h"
@@ -539,6 +540,7 @@ __device__ void MergeLocalGraphWithGlobalGraph(const ResultElement* local_knn_gr
         int neighb_id = neighb_ids[tx];
         bool loop_flag = false;
         do {
+            __nanosleep(8);
             if (loop_flag = atomicCAS(&global_locks[neighb_id], 0, 1) == 0) {
                 UniqueMergeSequential(&local_knn_graph[tx * NEIGHB_CACHE_NUM], 
                                       NEIGHB_CACHE_NUM, 
@@ -722,6 +724,279 @@ __device__ void GetNewOldDistances(float *distances, const float *vectors,
     }
 }
 
+const int M = 16;
+const int N = 16;
+const int K = 16;
+
+const int WMMA_M = 16;
+const int WMMA_N = 16;
+const int WMMA_K = 16;
+
+const int BLOCK_COL_WARPS = 1;
+const int BLOCK_ROW_WARPS = 4;
+
+const int ROWS_PER_IT = BLOCK_ROW_WARPS * WMMA_M;
+const int COLS_PER_IT = BLOCK_COL_WARPS * WMMA_K;
+
+using namespace nvcuda;
+// threads = 4 * 32 = 128
+__device__ void GetDistancesWMMA(float *distances, 
+                                 const float *vectors,
+                                 const int *new_neighbors, const int num_new,
+                                 const int *old_neighbors, const int num_old,
+                                 half shmem_a[][WMMA_K], 
+                                 half shmem_b[][WMMA_K]) {
+    __shared__ float distances_cache[4 * 4 * 16 * 16];
+    __shared__ float squa_suma_cache[64];
+    __shared__ float squa_sumb_cache[64];
+
+    const int tx = threadIdx.x;
+    const int warp_id = tx / warpSize;
+    const int lane_id = tx % warpSize;
+    int arow_it = GetItNum(num_new, ROWS_PER_IT);
+    int col_it = GetItNum(VEC_DIM, COLS_PER_IT);
+    int brow_it = GetItNum(num_old, ROWS_PER_IT);
+    for (int i = 0; i < arow_it; i++) {
+        int local_base_ay = warp_id * WMMA_M;
+        int global_base_ay = i * ROWS_PER_IT + local_base_ay;
+        for (int j = 0; j < brow_it; j++) {
+            int local_base_by = warp_id * WMMA_N;
+            int global_base_by = j * ROWS_PER_IT + local_base_by;
+            wmma::fragment<wmma::matrix_a, M, N, K, half, wmma::row_major>
+                a_frag;
+            wmma::fragment<wmma::matrix_b, M, N, K, half, wmma::col_major>
+                b_frag;
+            wmma::fragment<wmma::accumulator, M, N, K, float> 
+                acc_frag[BLOCK_ROW_WARPS];
+            for (int k = 0; k < ROWS_PER_IT; k++) {
+                wmma::fill_fragment(acc_frag[k], 0.0f);
+            } 
+            float squa_suma = 0, squa_sumb = 0;
+            for (int k = 0; k < col_it; k++) {
+                int local_x = lane_id % WMMA_K;
+                int global_x = k * COLS_PER_IT + local_x; 
+                if (lane_id < 16) {
+                    for (int t = 0; t < WMMA_M; t++) {
+                        int global_ay = global_base_ay + t;
+                        int local_ay = local_base_ay + t;
+
+                        int global_by = global_base_by + t;
+                        int local_by = local_base_by + t;
+                        if (global_ay < num_new && global_x < VEC_DIM) {
+                            int pos = new_neighbors[global_ay];
+                            float val = vectors[pos * VEC_DIM + global_x];
+                            shmem_a[local_ay][local_x] = (half)val;
+                        } else {
+                            shmem_a[local_ay][local_x] = (half)0.0;
+                        }
+                        if (global_by < num_old && global_x < VEC_DIM) {
+                            int pos = old_neighbors[global_by];
+                            float val = vectors[pos * VEC_DIM + global_x];
+                            shmem_b[local_by][local_x] = (half)val;
+                        } else {
+                            shmem_b[local_by][local_x] = (half)0.0;
+                        }
+                    }
+                } 
+                __syncthreads();
+                if (lane_id < 16) {
+                    for (int t = 0; t < WMMA_K; t++) {
+                        float val = (float)shmem_a[warp_id * 16 + lane_id][t];
+                        squa_suma += val * val;
+                        val = (float)shmem_b[warp_id * 16 + lane_id][t];
+                        squa_sumb += val * val;
+                    }
+                }
+                // if (num_old > 0 && k == 0) {
+                //     int flag = atomicCAS(&for_check, 0, 1);
+                //     if (!flag) {
+                //         for (int ii = 0; ii < num_old; ii++) {
+                //             for (int jj = 0; jj < 16; jj++) {
+                //                 int x = j * ROWS_PER_IT + ii;
+                //                 int y = k * COLS_PER_IT + jj;
+                //                 printf("%f ", vectors[old_neighbors[x] * VEC_DIM + y]);
+                //             } printf("\n");
+                //         } printf("\n\n");
+                //         for (int i = 0; i < num_old; i++) {
+                //             for (int j = 0; j < 16; j++) {
+                //                 printf("%f ", (float)shmem_b[i][j]);
+                //             } printf("\n");
+                //         } printf("\n\n");
+                //     }
+                // }
+                // __syncthreads();
+                // if (num_new > 0 && k == 0) {
+                //     int flag = atomicCAS(&for_check, 0, 1);
+                //     if (!flag) {
+                //         for (int ii = 0; ii < num_new; ii++) {
+                //             for (int jj = 0; jj < 16; jj++) {
+                //                 int x = i * ROWS_PER_IT + ii;
+                //                 int y = k * COLS_PER_IT + jj;
+                //                 printf("%f ", vectors[new_neighbors[x] * VEC_DIM + y]);
+                //             } printf("\n");
+                //         } printf("\n\n");
+                //         for (int i = 0; i < num_new; i++) {
+                //             for (int j = 0; j < 16; j++) {
+                //                 printf("%f ", (float)shmem_a[i][j]);
+                //             }printf("\n");
+                //         } printf("\n\n");
+                //     }
+                // }
+                // __syncthreads();
+                wmma::load_matrix_sync(a_frag, 
+                                       &shmem_a[warp_id * M][0],
+                                       COLS_PER_IT);
+                for (int t = 0; t < BLOCK_ROW_WARPS; t++) {
+                    wmma::load_matrix_sync(b_frag, 
+                                           &shmem_b[t * N][0],
+                                           COLS_PER_IT);
+                    wmma::mma_sync(acc_frag[t], a_frag, b_frag, acc_frag[t]);
+                }
+                // if (num_new > 0 && j == 0 && num_old > 0 && global_base_by == 0) {
+                //     int flag = atomicCAS(&for_check, 0, 1);
+                //     if (!flag) {
+                //         printf("check %d %d\n", num_new, num_old);
+                //         auto *a_ptr = &shmem_a[warp_idy * M][warp_idx * N];
+                //         for (int i = 0; i < 16; i++) {
+                //             for (int j = 0; j < 16; j++) {
+                //                 printf("%f ", (float)a_ptr[i * COLS_PER_IT + j]);
+                //             } printf("\n");
+                //         } printf("\n\n");
+                //         for (int i = 0; i < a_frag.num_elements; i++) {
+                //             printf("%f ", (float)a_frag.x[i]);
+                //         } printf("\n\n");
+                //         auto *b_ptr = &shmem_b[warp_idy * M][warp_idx * N];
+                //         for (int i = 0; i < 16; i++) {
+                //             for (int j = 0; j < 16; j++) {
+                //                 printf("%f ", (float)b_ptr[i * COLS_PER_IT + j]);
+                //             } printf("\n");
+                //         } printf("\n\n");
+                //         for (int i = 0; i < b_frag.num_elements; i++) {
+                //             printf("%f ", (float)b_frag.x[i]);
+                //         } printf("\n\n");
+                //         for (int i = 0; i < acc_frag.num_elements; i++) {
+                //             printf("%f ", (float)acc_frag.x[i]);
+                //         } printf("\n\n");
+                //     }
+                // }
+                // __syncthreads();
+            }
+            // __syncthreads();
+            for (int k = 0; k < BLOCK_ROW_WARPS; k++) {
+                for (int t = 0; t < acc_frag[k].num_elements; t++) {
+                    acc_frag[k].x[t] *= -2.0f;
+                }
+            }
+            for (int k = 0; k < BLOCK_ROW_WARPS; k++) {
+                wmma::store_matrix_sync(&distances_cache[warp_id * BLOCK_ROW_WARPS * WMMA_M * WMMA_N + k * WMMA_N], 
+                                        acc_frag[k], BLOCK_ROW_WARPS * WMMA_M, wmma::mem_row_major);
+            }
+            if (lane_id < 16) {
+                squa_suma_cache[warp_id * 16 + lane_id] = squa_suma;
+                squa_sumb_cache[warp_id * 16 + lane_id] = squa_sumb;
+            }
+            __syncthreads();
+            // if (warp_id == 0 && global_base_by == 0) {
+            //     int flag = atomicCAS(&for_check, 0, 1);
+            //     if (!flag) {
+            //         for (int i = 0; i < 64; i++) {
+            //             printf("%f ", squa_suma_cache[i]);
+            //         } printf("\n\n");
+            //         for (int i = 0; i < 64; i++) {
+            //             printf("%f ", squa_sumb_cache[i]);
+            //         } printf("\n\n");
+            //         int x = new_neighbors[0];
+            //         float suma = 0;
+            //         for (int i = 0; i < VEC_DIM; i++) {
+            //             float val = vectors[x * VEC_DIM + i];
+            //             suma += val * val;
+            //         }
+            //         printf("check %f\n", suma);
+            //     }
+            // }
+            // back conflict!!!
+            if (lane_id < 16) {
+                int local_base_dcy = warp_id * WMMA_M;
+                for (int k = 0; k < BLOCK_ROW_WARPS * WMMA_N; k++) {
+                    int local_x = k;
+                    int local_dcy = local_base_dcy + lane_id;
+                    int global_dy = i * BLOCK_ROW_WARPS * WMMA_M + local_dcy;
+                    int global_dx = j * BLOCK_ROW_WARPS * WMMA_N + local_x;
+                    // if (warp_id >= 2) {
+                    //     printf("check %d %d\n", global_dy, global_dx);
+                    //     assert(warp_id < 2);
+                    // }
+                    if (global_dy < num_new && global_dx < num_old) {
+                        // assert(warp_id < 2);
+                        distances[global_dy * num_old + global_dx] = 
+                            distances_cache[local_dcy * BLOCK_ROW_WARPS * WMMA_M + local_x] + 
+                            squa_suma_cache[local_dcy] + squa_sumb_cache[local_x];
+                    }
+                }
+            }
+            // if (tx == 0) {
+            //     for (int i = 0; i < 64; i++) {
+            //         for (int j = 0; j < 64; j++) {
+            //             int x = i, y = j;
+            //             if (x < num_new && y < num_old) {
+            //                 distances[x * num_old + y] = 
+            //                     distances_cache[x * 64 + y];
+            //             }
+            //         }
+            //     }
+            // }
+            __syncthreads();
+            // __syncthreads();
+            // if (global_base_ay < 16 && global_base_by < 16) {
+            //     int flag = atomicCAS(&for_check, 0, 1);
+            //     if (!flag) {
+            //         printf("ffff %d %d %d\n", warp_id, global_base_ay, global_base_by);
+            //         for (int i = 0; i < acc_frag[0].num_elements; i++) {
+            //             printf("%f ", acc_frag[0].x[i]);
+            //         } printf("\n\n");
+            //         for (int i = 0; i < min((int)16, num_new); i++) {
+            //             printf("%d ", new_neighbors[i]);
+            //         } printf("\n\n");
+            //         for (int i = 0; i < num_old; i++) {
+            //             printf("%d ", old_neighbors[i]);
+            //         } printf("\n\n");
+            //         for (int i = 0; i < num_new; i++) {
+            //             int x = new_neighbors[i];
+            //             int y = old_neighbors[0];
+            //             float suma = 0;
+            //             half sumb = (half)0.0;
+            //             for (int i = 0; i < VEC_DIM; i++) {
+            //                 float a = vectors[x * VEC_DIM + i];
+            //                 float b = vectors[y * VEC_DIM + i];
+            //                 suma += a * b;
+            //                 half aa = (half)a; half bb = (half)b;
+            //                 sumb += aa * bb;
+            //             }
+            //             printf("Sum %d %f %f\n", i, suma, (float)sumb);
+            //         }
+            //         for (int i = 0; i < 64; i++) {
+            //             for (int j = 0; j < 64; j++) {
+            //                 printf("%f ", distances_cache[i * 64 + j]);
+            //             } printf("\n");
+            //         } printf("\n\n");
+            //     }
+            // }
+            // __syncthreads();
+            // if (lane_id == 0) {
+            //     float *start = &distances_cache[(warp_id / 3) * 48 * 16 + (warp_id % 3) * 16];
+            //     for (int i = 0; i < 16; i++) {
+            //         for (int j = 0; j < 16; j++) {
+            //             if (global_base_ay + i < num_new && global_base_by + j < num_old) {
+            //                 distances[(global_base_ay + i) * num_old + global_base_by + j] = start[i * 48 + j];
+            //             }
+            //         }
+            //     }
+            // }
+            // global_base_ay * num_old + global_base_by
+        }
+    }
+}
+
 __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *global_locks, 
                                              const float *vectors,
                                              const int *edges_new, const int *dest_new,
@@ -735,6 +1010,9 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
     __shared__ ResultElement *knn_graph_cache;
 
     __shared__ int pos_gnew, pos_gold, num_new, num_old;
+
+    __shared__ half shmem_a[BLOCK_ROW_WARPS * WMMA_M][BLOCK_COL_WARPS * WMMA_K];
+    __shared__ half shmem_b[BLOCK_ROW_WARPS * WMMA_N][BLOCK_COL_WARPS * WMMA_K];
 
     int neighb_num_max = num_new_max + num_old_max;
     int tx = threadIdx.x;
@@ -778,12 +1056,35 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
 
     if (blockIdx.x == 0 && threadIdx.x == 0) {
         printf("new-old calc. num. %d %d %d\n", num_new, num_old, neighb_num);
-    }
+    } __syncthreads();
 
-    GetNewOldDistances(distances, vectors, 
-                       neighbors, num_new, neighbors + num_new, num_old);
+    GetDistancesWMMA(distances, vectors, 
+                     neighbors, num_new, neighbors + num_new, num_old,
+                     shmem_a, shmem_b);
     __syncthreads();
-
+    // if (num_old >= 2) {
+    //     int flag = atomicCAS(&for_check, 0, 1);
+    //     if (!flag) {
+    //         printf("\nCheck distance %d %d: \n", num_new, num_old);
+    //         for (int i = 0; i < num_new; i++) {
+    //             for (int j = 0; j < num_old; j++) {
+    //                 float distance = 0;
+    //                 int x = *(neighbors + i);
+    //                 int y = *(neighbors + j + num_new);
+    //                 for (int k = 0; k < VEC_DIM; k++) {
+    //                     float diff = vectors[x * VEC_DIM + k] - 
+    //                                  vectors[y * VEC_DIM + k];
+    //                     distance += diff * diff;
+    //                 }
+    //                 printf("%f ", distance);
+    //             } 
+    //         } printf("\n\n");
+    //         for (int i = 0; i < num_new * num_old; i++) {
+    //             printf("%f ", distances[i]);
+    //         } printf("\n\n");
+    //     }
+    // }
+    // return;
     int calc_num = num_new * num_old;
     // int num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
     const int num_it = 1;
@@ -966,13 +1267,15 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
         (knn_graph_dev, global_locks_dev, vectors_dev,
          edges_dev_new, dest_dev_new, num_new_max);
+    cudaDeviceSynchronize();
 
-    block_size = dim3(TILE_WIDTH * TILE_WIDTH);
+    block_size = dim3(128);
     int neighb_num_max = num_new_max + num_old_max;
     shared_memory_size = (num_new_max * num_old_max) * sizeof(float) + 
                          neighb_num_max * 2 * sizeof(int) + 
                          neighb_num_max * NEIGHB_CACHE_NUM * sizeof(ResultElement);
-
+    cerr << "shmem kernel2 size: " << shared_memory_size << endl;
+    auto start = chrono::steady_clock::now();
     NewOldNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
         (knn_graph_dev, global_locks_dev, vectors_dev, 
          edges_dev_new, dest_dev_new, num_new_max,
@@ -984,6 +1287,10 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     //                                                   edges_dev_new, dest_dev_new, 
     //                                                   edges_dev_old, dest_dev_old);
     cudaDeviceSynchronize();
+    auto end = chrono::steady_clock::now();
+    cerr << "Kernel 2 costs: "
+         << (float)chrono::duration_cast<chrono::microseconds>(end - start).count() / 1e6
+         << endl;
 
     cuda_status = cudaGetLastError();
 

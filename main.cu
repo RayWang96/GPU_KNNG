@@ -39,7 +39,7 @@ void TestCUDANNDescent() {
     //     = "/mnt/d/cache/hwang_data/data/sift10k/sift10k_groundtruth_self.txt";
 
     string base_path 
-        = "/mnt/d/cache/hwang_data/data/sift100k/sift100k.txt";
+        = "/mnt/d/cache/hwang_data/data/sift100k/sift100k_norm.txt";
     string out_path 
         = "/home/hwang/data/result/sift100k_knng_k30.txt";
     string ground_truth_path 
