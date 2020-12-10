@@ -421,36 +421,6 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
     }
 }
 
-__device__ int InsertToLocalKNNList(ResultElement *knn_list, 
-                                    const int list_size,
-                                    const ResultElement &element,
-                                    int *local_lock_ptr) {
-    int &local_lock = *local_lock_ptr;
-    int pos = -1;
-    bool loop_flag = false;
-    do {
-        if (loop_flag = atomicCAS(&local_lock, 0, 1) == 0) {
-            if (element >= knn_list[list_size-1]) ;
-            else {
-                int i = 0;
-                while (i < list_size && knn_list[i] < element) {
-                    i++;
-                }
-                if (knn_list[i] != element) {
-                    for (int j = list_size - 1; j > i && j > 0; j--) {
-                        knn_list[j] = knn_list[j-1];
-                    }
-                    knn_list[i] = element;
-                    pos = i;
-                }
-            }
-        }
-        __threadfence();
-        if (loop_flag) atomicExch(&local_lock, 0);
-    } while (!loop_flag);
-    return pos;
-}
-
 __device__ void UniqueMergeSequential(const ResultElement* A, const int m,
                                       const ResultElement* B, const int n,
                                       ResultElement* C, const int k) {
@@ -498,33 +468,6 @@ __device__ void UniqueMergeSequential(const ResultElement* A, const int m,
     }
 
 EXIT:
-    if (cnt != k) {
-        int flag = atomicCAS(&for_check, 0, 1);
-        if (!flag) {
-            printf("%d %d\n", cnt, k);
-            for (int i = 0; i < m; i++) {
-                printf("%f ", A[i].distance);
-            } printf("\n\n");
-            for (int i = 0; i < n; i++) {
-                printf("%f ", B[i].distance);
-            } printf("\n\n");
-            for (int i = 0; i < k; i++) {
-                printf("%f ", C[i].distance);
-            } printf("\n\n");
-
-            for (int i = 0; i < m; i++) {
-                printf("%d ", A[i].label);
-            } printf("\n\n");
-            for (int i = 0; i < n; i++) {
-                printf("%d ", B[i].label);
-            } printf("\n\n");
-            for (int i = 0; i < k; i++) {
-                printf("%d ", C[i].label);
-            } printf("\n\n");
-            printf("%d %d\n", cnt, k);
-            assert(cnt == k);
-        }
-    }
     return;
 }
 
@@ -608,9 +551,6 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     int calc_num = (neighb_num * (neighb_num - 1)) / 2;
 
     num_it = GetItNum(calc_num, block_dim_x);
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        printf("check calc. num. %d %d\n", neighb_num, calc_num);
-    }
     __syncthreads();
     for (int i = 0; i < num_it; i++) {
         int no = i * block_dim_x + tx;
@@ -659,7 +599,6 @@ __device__ void GetNewOldDistances(float *distances, const float *vectors,
                                    const int *old_neighbors, const int num_old) {
     __shared__ float nsv[TILE_WIDTH][TILE_WIDTH]; //New shared vectors
     __shared__ float osv[TILE_WIDTH][TILE_WIDTH]; //Old shared vectors
-    const int tile_size = TILE_WIDTH * TILE_WIDTH;
     const int width = VEC_DIM;
 
     int tx = threadIdx.x;
@@ -675,7 +614,6 @@ __device__ void GetNewOldDistances(float *distances, const float *vectors,
         float distance = -1.0;
         int row_new = i / col_num * TILE_WIDTH;
         int row_old = i % col_num * TILE_WIDTH;
-
         // Assume that the dimension of vectors larger than num of neighbors.
         for (int ph = 0; ph < ceil(width / (float)TILE_WIDTH); ph++) {
             if ((row_new + t_row < num_new) && (ph * TILE_WIDTH + t_col < VEC_DIM)) {
@@ -761,47 +699,41 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
     }
     __syncthreads();
 
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        printf("new-old calc. num. %d %d %d\n", num_new, num_old, neighb_num);
-    }
-
     GetNewOldDistances(distances, vectors, 
                        neighbors, num_new, neighbors + num_new, num_old);
     __syncthreads();
 
     int calc_num = num_new * num_old;
     // int num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
-    const int num_it = 1;
-    for (int i = 0; i < num_it; i++) {
-        // Read list to cache
-        int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
-        for (int j = 0; j < num_it2; j++) {
-            int pos = j * block_dim_x + tx;
-            if (pos < neighb_num * NEIGHB_CACHE_NUM)
-                knn_graph_cache[pos] = ResultElement(1e10, 33333333);
-        }
-        int list_size = NEIGHB_CACHE_NUM;
-        int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
-        for (int j = 0; j < num_it3; j++) {
-            int list_id = j * (block_dim_x / THREADS_PER_LIST) + 
-                          tx / THREADS_PER_LIST;
-            if (list_id >= neighb_num) continue;
-            if (list_id < num_new) {
-                UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size, 
-                                       neighbors + num_new, num_old, 
-                                       distances, calc_num);
-            } else {
-                UpdateLocalOldKNNLists(knn_graph_cache, list_id, list_size, 
-                                       neighbors, num_new, 
-                                       neighbors + num_new, num_old, 
-                                       distances, calc_num, vectors);
-            }
-       }
-        __syncthreads();
-        MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
-                                       neighb_num, knn_graph, global_locks);
-        __syncthreads();
+
+    // Read list to cache
+    int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
+    for (int j = 0; j < num_it2; j++) {
+        int pos = j * block_dim_x + tx;
+        if (pos < neighb_num * NEIGHB_CACHE_NUM)
+            knn_graph_cache[pos] = ResultElement(1e10, 33333333);
     }
+    int list_size = NEIGHB_CACHE_NUM;
+    int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
+    for (int j = 0; j < num_it3; j++) {
+        int list_id = j * (block_dim_x / THREADS_PER_LIST) + 
+                        tx / THREADS_PER_LIST;
+        if (list_id >= neighb_num) continue;
+        if (list_id < num_new) {
+            UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size, 
+                                   neighbors + num_new, num_old, 
+                                   distances, calc_num);
+        } else {
+            UpdateLocalOldKNNLists(knn_graph_cache, list_id, list_size, 
+                                   neighbors, num_new, 
+                                   neighbors + num_new, num_old, 
+                                   distances, calc_num, vectors);
+        }
+    }
+    __syncthreads();
+    MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
+                                    neighb_num, knn_graph, global_locks);
+    __syncthreads();
 }
 
 pair<int*, int*> ReadGraphToGlobalMemory(const Graph& graph) {
@@ -907,9 +839,10 @@ int GetMaxListSize(const Graph &g) {
     return res;
 }
 
-void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr, 
-                 float* vectors_dev, 
-                 const Graph& newg, const Graph& oldg, const int k) {
+float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr, 
+                  float* vectors_dev, 
+                  const Graph& newg, const Graph& oldg, const int k) {
+    float kernel_time = 0;
     auto &origin_knn_graph = *origin_knn_graph_ptr;
 
     int *edges_dev_new, *dest_dev_new;
@@ -949,6 +882,8 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
         num_new_max * sizeof(int);
 
     cerr << "Shmem kernel1 costs: " << shared_memory_size << endl;
+
+    auto start = chrono::steady_clock::now();
     NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
         (knn_graph_dev, global_locks_dev, vectors_dev,
          edges_dev_new, dest_dev_new, num_new_max);
@@ -964,14 +899,9 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
         (knn_graph_dev, global_locks_dev, vectors_dev, 
          edges_dev_new, dest_dev_new, num_new_max,
          edges_dev_old, dest_dev_old, num_old_max);
-
-    // LocalDistCompareKernel<<<grid_size, block_size>>>(knn_graph_dev, 
-    //                                                   global_locks_dev,
-    //                                                   vectors_dev,
-    //                                                   edges_dev_new, dest_dev_new, 
-    //                                                   edges_dev_old, dest_dev_old);
     cudaDeviceSynchronize();
-
+    auto end = chrono::steady_clock::now();
+    kernel_time = (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;
     cuda_status = cudaGetLastError();
 
     if (cuda_status != cudaSuccess) {
@@ -996,6 +926,7 @@ void UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     cudaFree(edges_dev_old);
     cudaFree(dest_dev_old);
     cudaFree(knn_graph_dev);
+    return kernel_time;
 }
 
 namespace gpuknn {
@@ -1046,10 +977,12 @@ namespace gpuknn {
                  });
         }
 
-        float kernel_costs = 0;
+        float iteration_costs = 0;
         Graph newg, oldg;
         float get_nb_graph_time = 0;
+        float kernel_costs = 0;
         auto sum_start = chrono::steady_clock::now();
+        long long cmp_times = 0;
         for (int t = 0; t < iteration; t++) {
             cerr << "Start generating NBGraph." << endl;
             auto start = chrono::steady_clock::now();
@@ -1058,6 +991,9 @@ namespace gpuknn {
             float tmp_time = 
                 (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;
             get_nb_graph_time += tmp_time;
+            for (int i = 0; i < newg.size(); i++) {
+                cmp_times += (newg[i].size() - 1) * newg[i].size() / 2 + newg[i].size() * oldg[i].size();
+            }
             cerr << "GetNBGraph costs "
                  << tmp_time
                  << endl;
@@ -1065,19 +1001,21 @@ namespace gpuknn {
             start = chrono::steady_clock::now();
             vector<pair<float, int>> tmp_result;
             // long long update_times = 0;
-            UpdateGraph(&g, vectors_dev, newg, oldg, k);
+            float tmp_kernel_costs = UpdateGraph(&g, vectors_dev, newg, oldg, k);
+            kernel_costs += tmp_kernel_costs;
             end = chrono::steady_clock::now();
-            float kernel_tmp_costs = (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;
-            kernel_costs += kernel_tmp_costs;
-            cerr << "Kernel costs "
-                 << kernel_tmp_costs
-                 << endl;
+            float it_tmp_costs = (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6;
+            iteration_costs += it_tmp_costs;
+            cerr << "Kernel costs " << tmp_kernel_costs << endl;
             cerr << endl;
         }
         auto sum_end = chrono::steady_clock::now();
         float sum_costs = (float)chrono::duration_cast<std::chrono::microseconds>(sum_end - sum_start).count() / 1e6;
         // sift10k in cpu should be 0.6s;
-        cerr << "All kernel costs: " << kernel_costs << endl;
+        cerr << "Compare times: " << cmp_times << endl;
+        cerr << "FLOPS: " << cmp_times * 128 * 3 / kernel_costs / pow(1024.0, 3) << "G" << endl;
+        cerr << "Kernel costs: " << kernel_costs << endl;
+        cerr << "Update costs: " << iteration_costs << endl;
         cerr << "Get NB graph costs: " << get_nb_graph_time << endl; 
         cerr << "All procedure costs: " << sum_costs << endl;
         return g;

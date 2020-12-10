@@ -9,7 +9,6 @@
 #include "tools/distfunc.hpp"
 
 #include "gpuknn/nndescent.cuh"
-#include "gpuknn/unittest.cu"
 
 using namespace std;
 using namespace xmuknn;
@@ -18,7 +17,7 @@ void evaluate(const string &data_path, const string &ground_truth_path) {
     string cmd = "python3 -u \"/home/hwang/codes/GPU_KNNG/tools/evaluate.py\"";
     cmd += " "; cmd += data_path;
     cmd += " "; cmd += ground_truth_path;
-    system(cmd.c_str());
+    int re = system(cmd.c_str());
 }
 
 struct KNNItem {
@@ -80,10 +79,6 @@ void TestCUDANNDescent() {
          << (float)chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1e6
          << endl;
     evaluate(out_path, ground_truth_path);
-}
-
-void UnitTest() {
-    TestKNNListInsert();
 }
 
 int main() {
