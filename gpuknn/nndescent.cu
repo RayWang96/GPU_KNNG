@@ -29,10 +29,12 @@ using namespace xmuknn;
 #define LARGE_INT 0x3f3f3f3f
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 40;
-const int NEIGHB_CACHE_NUM = 16;
+const int NEIGHB_CACHE_NUM = 10;
 const int TILE_WIDTH = 16;
+const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
 const int THREADS_PER_LIST = 32;
-const int SAMPLE_NUM = 25;
+const int SAMPLE_NUM = 30;
+const int SKEW_DIM = VEC_DIM + 1;
 __device__ int for_check = 0;
 
 void GetNBGraph(Graph *graph_new_ptr,
@@ -153,14 +155,8 @@ void GetNBGraph(Graph *graph_new_ptr,
     return;
 }
 
-__device__ int GetItNum(const int sum_num, const int num_per_it) {
+__device__ __forceinline__ int GetItNum(const int sum_num, const int num_per_it) {
     return sum_num / num_per_it + (sum_num % num_per_it != 0);
-}
-
-__device__ void Swap(int &a, int &b) {
-    int c = a;
-    a = b;
-    b = c;
 }
 
 __device__ __forceinline__ ResultElement XorSwap(ResultElement x, int mask, int dir) {
@@ -177,7 +173,7 @@ __device__ __forceinline__ int Bfe(int lane_id, int pos) {
     return res;
 }
 
-__device__ void BitonicSort(ResultElement *sort_element_ptr, const int lane_id) {
+__device__ __forceinline__ void BitonicSort(ResultElement *sort_element_ptr, const int lane_id) {
     auto &sort_elem = *sort_element_ptr;
     sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 1) ^ Bfe(lane_id, 0));
     sort_elem = XorSwap(sort_elem, 0x02, Bfe(lane_id, 2) ^ Bfe(lane_id, 1));
@@ -221,7 +217,7 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
             sort_elem.distance = distances[current_pos];
         } else {
             sort_elem.distance = 1e10;
-            sort_elem.label = 87654321;
+            sort_elem.label = LARGE_INT;
         }
         // printf("%d %f %d\n", lane_id, sort_elem.distance, sort_elem.label);
         BitonicSort(&sort_elem, lane_id);
@@ -247,7 +243,7 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
             if (lane_id < NEIGHB_CACHE_NUM) {
                 sort_elem = knn_list[pos_in_lists + lane_id];
             } else {
-                sort_elem = ResultElement(1e10, 12345678);
+                sort_elem = ResultElement(1e10, LARGE_INT);
             }        
         }
         BitonicSort(&sort_elem, lane_id);
@@ -265,7 +261,7 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
             sort_elem.distance = distances[current_pos];
         } else {
             sort_elem.distance = 1e10;
-            sort_elem.label = 99999999;
+            sort_elem.label = LARGE_INT;
         }
         BitonicSort(&sort_elem, lane_id);
         int offset;
@@ -290,7 +286,7 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
             if (lane_id < NEIGHB_CACHE_NUM) {
                 sort_elem = knn_list[pos_in_lists + lane_id];
             } else {
-                sort_elem = ResultElement(1e10, 12345678);
+                sort_elem = ResultElement(1e10, LARGE_INT);
             }
         }
         BitonicSort(&sort_elem, lane_id);
@@ -327,7 +323,7 @@ __device__ void UpdateLocalNewKNNLists(ResultElement *knn_list,
             sort_elem.distance = distances[current_pos];
         } else {
             sort_elem.distance = 1e10;
-            sort_elem.label = 87654321;
+            sort_elem.label = LARGE_INT;
         }
         // printf("%d %f %d\n", lane_id, sort_elem.distance, sort_elem.label);
         BitonicSort(&sort_elem, lane_id);
@@ -353,7 +349,7 @@ __device__ void UpdateLocalNewKNNLists(ResultElement *knn_list,
             if (lane_id < NEIGHB_CACHE_NUM) {
                 sort_elem = knn_list[pos_in_lists + lane_id];
             } else {
-                sort_elem = ResultElement(1e10, 12345678);
+                sort_elem = ResultElement(1e10, LARGE_INT);
             }
         }
         BitonicSort(&sort_elem, lane_id);
@@ -387,7 +383,7 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
             sort_elem.distance = distances[current_pos];
         } else {
             sort_elem.distance = 1e10;
-            sort_elem.label = 55555555;
+            sort_elem.label = LARGE_INT;
         }
         BitonicSort(&sort_elem, lane_id);
         int offset;
@@ -412,7 +408,7 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
             if (lane_id < NEIGHB_CACHE_NUM) {
                 sort_elem = knn_list[pos_in_lists + lane_id];
             } else {
-                sort_elem = ResultElement(1e10, 12345678);
+                sort_elem = ResultElement(1e10, LARGE_INT);
             }
         }
         BitonicSort(&sort_elem, lane_id);
@@ -493,7 +489,8 @@ __device__ void MergeLocalGraphWithGlobalGraph(const ResultElement* local_knn_gr
                 }
             }
             __threadfence();
-            if (loop_flag) atomicExch(&global_locks[neighb_id], 0);
+            if (loop_flag) {atomicExch(&global_locks[neighb_id], 0);}
+            __nanosleep(32);
         } while (!loop_flag);
     }
 }
@@ -514,7 +511,7 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
         shared_vectors = (float *)buffer;
         knn_graph_cache = 
             (ResultElement *)buffer;
-        size_t offset = max(num_new_max * VEC_DIM * sizeof(float),
+        size_t offset = max(num_new_max * SKEW_DIM * sizeof(float),
                             num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement));
         distances = 
             (float *)((char *)buffer + offset);
@@ -545,7 +542,7 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
         if (x >= neighb_num) continue;
         int y = tx % VEC_DIM;
         int vec_id = neighbors[x];
-        shared_vectors[x * VEC_DIM + y] = vectors[vec_id * VEC_DIM + y];
+        shared_vectors[x * SKEW_DIM + y] = vectors[vec_id * VEC_DIM + y];
     }
 
     int calc_num = (neighb_num * (neighb_num - 1)) / 2;
@@ -557,39 +554,40 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
         if (no >= calc_num) continue;
         int idx = no + 1;
         int x = ceil(sqrt(2 * idx + 0.25) - 0.5);
+        if (x >= neighb_num) continue;
         int y = idx - (x - 1) * x / 2 - 1;
-        if (x >= neighb_num || y >= neighb_num) continue;
+        if (y >= neighb_num) continue;
         float sum = 0;
+        int base_x = x * SKEW_DIM;
+        int base_y = y * SKEW_DIM;
         for (int j = 0; j < VEC_DIM; j++) {
-            float diff = shared_vectors[x * VEC_DIM + j] - 
-                         shared_vectors[y * VEC_DIM + j];
+            float diff = shared_vectors[base_x + j] - 
+                         shared_vectors[base_y + j];
             sum += diff * diff;
         }
         distances[no] = sum;
     }
     __syncthreads();
     // num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
-    num_it = 1;
-    for (int i = 0; i < num_it; i++) {
-        int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
-        for (int j = 0; j < num_it2; j++) {
-            int pos = j * block_dim_x + tx;
-            if (pos < neighb_num * NEIGHB_CACHE_NUM)
-                knn_graph_cache[pos] = ResultElement(1e10, 77777777);
-        }
-        int list_size = NEIGHB_CACHE_NUM;
-        int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
-        for (int j = 0; j < num_it3; j++) {
-            int list_id = j * (block_dim_x / THREADS_PER_LIST) + tx / THREADS_PER_LIST;
-            if (list_id >= neighb_num) continue;
-            UpdateLocalKNNLists(knn_graph_cache, neighbors, 
-                                list_id, list_size, distances, calc_num);
-        }
-        __syncthreads();
-        MergeLocalGraphWithGlobalGraph(knn_graph_cache, NEIGHB_CACHE_NUM, neighbors,
-                                       neighb_num, knn_graph, global_locks);
-        __syncthreads();
+
+    int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
+    for (int j = 0; j < num_it2; j++) {
+        int pos = j * block_dim_x + tx;
+        if (pos < neighb_num * NEIGHB_CACHE_NUM)
+            knn_graph_cache[pos] = ResultElement(1e10, LARGE_INT);
     }
+    int list_size = NEIGHB_CACHE_NUM;
+    int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
+    for (int j = 0; j < num_it3; j++) {
+        int list_id = j * (block_dim_x / THREADS_PER_LIST) + tx / THREADS_PER_LIST;
+        if (list_id >= neighb_num) continue;
+        UpdateLocalKNNLists(knn_graph_cache, neighbors, 
+                            list_id, list_size, distances, calc_num);
+    }
+    __syncthreads();
+    MergeLocalGraphWithGlobalGraph(knn_graph_cache, NEIGHB_CACHE_NUM, neighbors,
+                                    neighb_num, knn_graph, global_locks);
+    __syncthreads();
 }
 
 
@@ -597,8 +595,8 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
 __device__ void GetNewOldDistances(float *distances, const float *vectors,
                                    const int *new_neighbors, const int num_new,
                                    const int *old_neighbors, const int num_old) {
-    __shared__ float nsv[TILE_WIDTH][TILE_WIDTH]; //New shared vectors
-    __shared__ float osv[TILE_WIDTH][TILE_WIDTH]; //Old shared vectors
+    __shared__ float nsv[TILE_WIDTH][SKEW_TILE_WIDTH]; //New shared vectors
+    __shared__ float osv[TILE_WIDTH][SKEW_TILE_WIDTH]; //Old shared vectors
     const int width = VEC_DIM;
 
     int tx = threadIdx.x;
@@ -711,7 +709,7 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
     for (int j = 0; j < num_it2; j++) {
         int pos = j * block_dim_x + tx;
         if (pos < neighb_num * NEIGHB_CACHE_NUM)
-            knn_graph_cache[pos] = ResultElement(1e10, 33333333);
+            knn_graph_cache[pos] = ResultElement(1e10, LARGE_INT);
     }
     int list_size = NEIGHB_CACHE_NUM;
     int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
@@ -870,13 +868,13 @@ float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
         exit(-1);
     }
 
-    dim3 block_size(512);
+    dim3 block_size(640);
     dim3 grid_size(g_size);
     // cerr << "Start kernel." << endl;
     const int num_new_max = GetMaxListSize(newg);
     const int num_old_max = GetMaxListSize(oldg);
     size_t shared_memory_size = 
-        max(num_new_max * VEC_DIM * sizeof(float),
+        max(num_new_max * SKEW_DIM * sizeof(float),
             num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement)) + 
         (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
         num_new_max * sizeof(int);
@@ -932,7 +930,7 @@ float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 namespace gpuknn {
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim) {
         int k = NEIGHB_NUM_PER_LIST;
-        int iteration = 6;
+        int iteration = 1;
         auto cuda_status = cudaSetDevice(DEVICE_ID);
 
         float* vectors_dev;
