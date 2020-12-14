@@ -176,8 +176,11 @@ template <typename T>
 T __shfl_sync(unsigned mask, T var, int srcLane, int width = warpSize) {};
 template <typename T>
 T __shfl_up_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
-template <typename T>
-T __shfl_down_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
+// template <typename T>
+// T __shfl_down_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
+float __shfl_down_sync(unsigned mask, float var, unsigned int delta, int width = warpSize) {};
+int __shfl_down_sync(unsigned mask, int var, unsigned int delta, int width = warpSize) {};
+
 template <typename T>
 T __shfl_xor_sync(unsigned mask, T var, int laneMask, int width = warpSize) {};
 

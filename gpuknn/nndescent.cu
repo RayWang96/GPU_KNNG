@@ -27,10 +27,11 @@ using namespace std;
 using namespace xmuknn;
 #define DEVICE_ID 0
 #define LARGE_INT 0x3f3f3f3f
+#define FULL_MASK 0xffffffff
 #define DONT_TILE 0
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 40;
-const int NEIGHB_CACHE_NUM = 10;
+const int NEIGHB_CACHE_NUM = 1;
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
 const int THREADS_PER_LIST = 32;
@@ -163,6 +164,143 @@ void GetNBGraph(Graph *graph_new_ptr,
 
 __device__ __forceinline__ int GetItNum(const int sum_num, const int num_per_it) {
     return sum_num / num_per_it + (sum_num % num_per_it != 0);
+}
+
+__device__ __forceinline__ ResultElement __shfl_down_sync(const int mask,
+                                                          ResultElement var,
+                                                          const int delta,
+                                                          const int width = warpSize) {
+    ResultElement res;
+    res.distance = __shfl_down_sync(mask, var.distance, delta, width);
+    res.label = __shfl_down_sync(mask, var.label, delta, width);
+    return res;
+}
+
+template <typename T>
+__device__ __forceinline__ T Min(const T &a, const T &b) {
+    return a < b ? a : b;
+}
+
+__device__ ResultElement GetMinElement(const int *neighbs_id,
+                                       const int list_id, const int list_size,
+                                       const float *distances, const int distances_num) {
+    int head_pos = list_id * (list_id - 1) / 2;
+    int tail_pos = (list_id + 1) * list_id / 2;
+    int y_num = tail_pos - head_pos;
+    
+    int tx = threadIdx.x;
+    int lane_id = tx % THREADS_PER_LIST;
+    ResultElement min_elem = ResultElement(1e10, LARGE_INT);
+
+    int it_num = GetItNum(y_num, THREADS_PER_LIST);
+    for (int it = 0; it < it_num; it++) {
+        // bitonic sort
+        ResultElement elem;
+        elem.label = neighbs_id[it * THREADS_PER_LIST + lane_id];
+        int current_pos = head_pos + it * THREADS_PER_LIST + lane_id;
+        if (current_pos < tail_pos) {
+            elem.distance = distances[current_pos];
+        } else {
+            elem.distance = 1e10;
+            elem.label = LARGE_INT;
+        }
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) 
+            elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
+        if (lane_id == 0) {
+            min_elem = Min(elem, min_elem);
+        }
+    }
+
+    head_pos = list_id * (list_id + 3) / 2; // 0   2   5   9   14
+    for (int it = 0; it < 2; it++) {
+        ResultElement elem;
+        int no = it * THREADS_PER_LIST + lane_id;
+        elem.label = neighbs_id[no + list_id + 1];
+        int current_pos = head_pos + no * (no + list_id * 2 + 1) / 2;
+        if (current_pos < distances_num) {
+            elem.distance = distances[current_pos];
+        } else {
+            elem.distance = 1e10;
+            elem.label = LARGE_INT;
+        }
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) 
+            elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
+        if (lane_id == 0) {
+            min_elem = Min(elem, min_elem);
+        }
+    }
+    return min_elem;
+}
+
+__device__ ResultElement GetMinElement2(const int list_id,
+                                        const int list_size,
+                                        const int *old_neighbs,
+                                        const int num_old,
+                                        const float *distances,
+                                        const int distances_num) {
+    int head_pos = list_id * num_old;
+    int y_num = num_old;
+    int tail_pos = head_pos + num_old;
+
+    int tx = threadIdx.x;
+    int lane_id = tx % THREADS_PER_LIST;
+    ResultElement min_elem = ResultElement(1e10, LARGE_INT);
+
+    int it_num = GetItNum(y_num, THREADS_PER_LIST);
+    for (int it = 0; it < it_num; it++) {
+        // bitonic sort
+        ResultElement elem;
+        int no = it * THREADS_PER_LIST + lane_id;
+        elem.label = old_neighbs[no];
+        int current_pos = head_pos + no;
+        if (current_pos < tail_pos) {
+            elem.distance = distances[current_pos];
+        } else {
+            elem.distance = 1e10;
+            elem.label = LARGE_INT;
+        }
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) 
+            elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
+        if (lane_id == 0) {
+            min_elem = Min(elem, min_elem);
+        }
+    }
+    return min_elem;
+}
+
+__device__ ResultElement GetMinElement3(const int list_id,
+                                        const int list_size,
+                                        const int *new_neighbs,
+                                        const int num_new,
+                                        const int *old_neighbs,
+                                        const int num_old,
+                                        const float *distances,
+                                        const int distances_num,
+                                        const float *vectors) {
+    int head_pos = list_id - num_new;
+    int tx = threadIdx.x;
+    int lane_id = tx % THREADS_PER_LIST;
+    ResultElement min_elem = ResultElement(1e10, LARGE_INT);
+
+    int it_num = GetItNum(num_new, THREADS_PER_LIST);
+    for (int it = 0; it < it_num; it++) {
+        ResultElement elem;
+        int no = it * THREADS_PER_LIST + lane_id;
+        elem.label = new_neighbs[no];
+        int current_pos = head_pos + no * num_old;
+        if (current_pos < distances_num) {
+            elem.distance = distances[current_pos];
+        } else {
+            elem.distance = 1e10;
+            elem.label = LARGE_INT;
+        }
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) 
+            elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
+        if (lane_id == 0) {
+            min_elem = Min(elem, min_elem);
+        }
+    }
+    return min_elem;
 }
 
 __device__ __forceinline__ ResultElement XorSwap(ResultElement x, int mask, int dir) {
@@ -485,13 +623,15 @@ __device__ void MergeLocalGraphWithGlobalGraph(const ResultElement* local_knn_gr
         bool loop_flag = false;
         do {
             if (loop_flag = atomicCAS(&global_locks[neighb_id], 0, 1) == 0) {
-                UniqueMergeSequential(&local_knn_graph[tx * NEIGHB_CACHE_NUM], 
-                                      NEIGHB_CACHE_NUM, 
-                                      &global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST],
-                                      NEIGHB_NUM_PER_LIST, C_cache, NEIGHB_NUM_PER_LIST);
-                for (int i = 0; i < NEIGHB_NUM_PER_LIST; i++) {
-                    global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST + i]
-                        = C_cache[i];
+                if (local_knn_graph[tx * NEIGHB_CACHE_NUM].label != LARGE_INT) {
+                    UniqueMergeSequential(&local_knn_graph[tx * NEIGHB_CACHE_NUM], 
+                                        NEIGHB_CACHE_NUM, 
+                                        &global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST],
+                                        NEIGHB_NUM_PER_LIST, C_cache, NEIGHB_NUM_PER_LIST);
+                    for (int i = 0; i < NEIGHB_NUM_PER_LIST; i++) {
+                        global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST + i]
+                            = C_cache[i];
+                    }
                 }
             }
             __threadfence();
@@ -499,6 +639,48 @@ __device__ void MergeLocalGraphWithGlobalGraph(const ResultElement* local_knn_gr
             __nanosleep(32);
         } while (!loop_flag);
     }
+}
+
+__global__ void InsertToGlobalGraph(const ResultElement elem, const int list_id,
+                                    ResultElement *global_knn_graph,
+                                    int *global_locks) {
+    __shared__ ResultElement knn_list_cache[NEIGHB_NUM_PER_LIST];
+    int tx = threadIdx.x;
+    int lane_id = tx % warpSize;
+    bool loop_flag = false;
+    do {
+        loop_flag = atomicCAS(&global_locks[list_id], 0, 1);
+        __shfl_sync(FULL_MASK, loop_flag, 0);
+        if (loop_flag == 0) {
+            ResultElement *knn_list = 
+                &global_knn_graph[list_id * NEIGHB_NUM_PER_LIST];
+            int num_it = GetItNum(NEIGHB_NUM_PER_LIST, warpSize);
+            for (int i = 0; i < num_it; i++) {
+                int idx = i * warpSize + tx;
+                knn_list_cache[idx] = knn_list[idx];
+            }
+            if (elem >= knn_list_cache[NEIGHB_NUM_PER_LIST - 1]) ;
+            else {
+                int i = 0;
+                while (i < NEIGHB_NUM_PER_LIST && knn_list_cache[i] < elem) {
+                    i++;
+                }
+                if (knn_list_cache[i] != elem) {
+                    for (int j = NEIGHB_NUM_PER_LIST - 1; j > i && j > 0; j--) {
+                        knn_list_cache[j] = knn_list_cache[j-1];
+                    }
+                    knn_list_cache[i] = elem;
+                }
+            }
+            for (int i = 0; i < num_it; i++) {
+                int idx = i * warpSize + tx;
+                knn_list[idx] = knn_list_cache[idx];
+            }
+        }
+        __threadfence();
+        if (loop_flag && lane_id == 0) { atomicExch(&global_locks[list_id], 0);}
+        __nanosleep(32);
+    } while (!loop_flag);
 }
 
 __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_locks,
@@ -513,6 +695,7 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     __shared__ int pos_gnew, num_new;
 
     int tx = threadIdx.x;
+    int lane_id = tx % warpSize;
     if (tx == 0) {
         shared_vectors = (float *)buffer;
         knn_graph_cache = (ResultElement *)buffer;
@@ -586,12 +769,25 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     for (int j = 0; j < num_it3; j++) {
         int list_id = j * (block_dim_x / THREADS_PER_LIST) + tx / THREADS_PER_LIST;
         if (list_id >= neighb_num) continue;
-        UpdateLocalKNNLists(knn_graph_cache, neighbors, 
-                            list_id, list_size, distances, calc_num);
+        ResultElement min_elem = GetMinElement(neighbors, list_id, list_size,
+                                               distances, calc_num);
+        // InsertToGlobalGraph<<<1, warpSize>>>(min_elem, neighbors[list_id], knn_graph, global_locks);
+        if (lane_id == 0) {
+            knn_graph_cache[list_id] = min_elem;
+        }
+        // UpdateLocalKNNLists(knn_graph_cache, neighbors, 
+        //                     list_id, list_size, distances, calc_num);
+        // if (tx % warpSize == 0 && 
+        //     min_elem.label != knn_graph_cache[list_id * list_size].label) {
+        //     printf("check %f %d %f %d\n", min_elem.distance, min_elem.label,
+        //            knn_graph_cache[list_id * list_size].distance,
+        //            knn_graph_cache[list_id * list_size].label);
+        //     assert(min_elem == knn_graph_cache[list_id * list_size]);
+        // }
     }
     __syncthreads();
     MergeLocalGraphWithGlobalGraph(knn_graph_cache, NEIGHB_CACHE_NUM, neighbors,
-                                    neighb_num, knn_graph, global_locks);
+                                   neighb_num, knn_graph, global_locks);
     __syncthreads();
 }
 
@@ -780,6 +976,7 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
 
     int neighb_num_max = num_new_max + num_old_max;
     int tx = threadIdx.x;
+    int lane_id = tx % warpSize;
     if (tx == 0) {
         distances = (float *)buffer;
         neighbors = 
@@ -813,7 +1010,7 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
     __syncthreads();
 
     GetNewOldDistancesTiled(distances, vectors, 
-                       neighbors, num_new, neighbors + num_new, num_old);
+                            neighbors, num_new, neighbors + num_new, num_old);
     __syncthreads();
 
     int calc_num = num_new * num_old;
@@ -832,20 +1029,34 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
         int list_id = j * (block_dim_x / THREADS_PER_LIST) + 
                         tx / THREADS_PER_LIST;
         if (list_id >= neighb_num) continue;
+        ResultElement min_elem(1e10, LARGE_INT);
         if (list_id < num_new) {
-            UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size, 
-                                   neighbors + num_new, num_old, 
-                                   distances, calc_num);
+            min_elem = Min(min_elem, GetMinElement2(list_id, list_size, 
+                                                    neighbors + num_new, num_old, 
+                                                    distances, calc_num));
         } else {
-            UpdateLocalOldKNNLists(knn_graph_cache, list_id, list_size, 
-                                   neighbors, num_new, 
-                                   neighbors + num_new, num_old, 
-                                   distances, calc_num, vectors);
+            min_elem = Min(min_elem, GetMinElement3(list_id, list_size, 
+                                                    neighbors, num_new, 
+                                                    neighbors + num_new, num_old, 
+                                                    distances, calc_num, vectors));
+        }
+        // if (min_elem.label >= 100000) {
+        //     int flag = atomicCAS(&for_check, 0, 1);
+        //     if (!flag) {
+        //         printf("check %f %d\n", min_elem.distance, min_elem.label);
+        //         for (int i = 0; i < calc_num; i++) {
+        //             printf("%f ", distances[i]);
+        //         } printf("\n\n");
+        //     }
+        //     assert(min_elem.label < 100000);
+        // }
+        if (lane_id == 0) {
+            knn_graph_cache[list_id] = min_elem;
         }
     }
     __syncthreads();
     MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
-                                    neighb_num, knn_graph, global_locks);
+                                   neighb_num, knn_graph, global_locks);
     __syncthreads();
 }
 
