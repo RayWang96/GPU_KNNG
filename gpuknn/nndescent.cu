@@ -29,9 +29,14 @@ using namespace xmuknn;
 #define LARGE_INT 0x3f3f3f3f
 #define FULL_MASK 0xffffffff
 #define DONT_TILE 0
+#define INSERT_MIN_ONLY 1
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 40;
+#if INSERT_MIN_ONLY
 const int NEIGHB_CACHE_NUM = 1;
+#else
+const int NEIGHB_CACHE_NUM = 10;
+#endif
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
 const int THREADS_PER_LIST = 32;
@@ -758,32 +763,29 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     __syncthreads();
     // num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
 
+    #if !INSERT_MIN_ONLY
     int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
     for (int j = 0; j < num_it2; j++) {
         int pos = j * block_dim_x + tx;
         if (pos < neighb_num * NEIGHB_CACHE_NUM)
             knn_graph_cache[pos] = ResultElement(1e10, LARGE_INT);
     }
+    #endif
     int list_size = NEIGHB_CACHE_NUM;
     int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
     for (int j = 0; j < num_it3; j++) {
         int list_id = j * (block_dim_x / THREADS_PER_LIST) + tx / THREADS_PER_LIST;
         if (list_id >= neighb_num) continue;
+        #if INSERT_MIN_ONLY
         ResultElement min_elem = GetMinElement(neighbors, list_id, list_size,
                                                distances, calc_num);
-        // InsertToGlobalGraph<<<1, warpSize>>>(min_elem, neighbors[list_id], knn_graph, global_locks);
         if (lane_id == 0) {
             knn_graph_cache[list_id] = min_elem;
         }
-        // UpdateLocalKNNLists(knn_graph_cache, neighbors, 
-        //                     list_id, list_size, distances, calc_num);
-        // if (tx % warpSize == 0 && 
-        //     min_elem.label != knn_graph_cache[list_id * list_size].label) {
-        //     printf("check %f %d %f %d\n", min_elem.distance, min_elem.label,
-        //            knn_graph_cache[list_id * list_size].distance,
-        //            knn_graph_cache[list_id * list_size].label);
-        //     assert(min_elem == knn_graph_cache[list_id * list_size]);
-        // }
+        #else
+        UpdateLocalKNNLists(knn_graph_cache, neighbors, 
+                            list_id, list_size, distances, calc_num);
+        #endif
     }
     __syncthreads();
     MergeLocalGraphWithGlobalGraph(knn_graph_cache, NEIGHB_CACHE_NUM, neighbors,
@@ -1017,18 +1019,21 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
     // int num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
 
     // Read list to cache
+    #if !INSERT_MIN_ONLY
     int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
     for (int j = 0; j < num_it2; j++) {
         int pos = j * block_dim_x + tx;
         if (pos < neighb_num * NEIGHB_CACHE_NUM)
             knn_graph_cache[pos] = ResultElement(1e10, LARGE_INT);
     }
+    #endif
     int list_size = NEIGHB_CACHE_NUM;
     int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
     for (int j = 0; j < num_it3; j++) {
         int list_id = j * (block_dim_x / THREADS_PER_LIST) + 
                         tx / THREADS_PER_LIST;
         if (list_id >= neighb_num) continue;
+        #if INSERT_MIN_ONLY
         ResultElement min_elem(1e10, LARGE_INT);
         if (list_id < num_new) {
             min_elem = Min(min_elem, GetMinElement2(list_id, list_size, 
@@ -1039,20 +1044,22 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
                                                     neighbors, num_new, 
                                                     neighbors + num_new, num_old, 
                                                     distances, calc_num, vectors));
-        }
-        // if (min_elem.label >= 100000) {
-        //     int flag = atomicCAS(&for_check, 0, 1);
-        //     if (!flag) {
-        //         printf("check %f %d\n", min_elem.distance, min_elem.label);
-        //         for (int i = 0; i < calc_num; i++) {
-        //             printf("%f ", distances[i]);
-        //         } printf("\n\n");
-        //     }
-        //     assert(min_elem.label < 100000);
-        // }
+        }  
         if (lane_id == 0) {
             knn_graph_cache[list_id] = min_elem;
         }
+        #else
+        if (list_id < num_new) {
+            UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size, 
+                                   neighbors + num_new, num_old, 
+                                   distances, calc_num);
+        } else {
+            UpdateLocalOldKNNLists(knn_graph_cache, list_id, list_size, 
+                                   neighbors, num_new, 
+                                   neighbors + num_new, num_old, 
+                                   distances, calc_num, vectors);
+        }
+        #endif
     }
     __syncthreads();
     MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
