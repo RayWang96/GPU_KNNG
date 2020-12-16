@@ -31,7 +31,9 @@ using namespace xmuknn;
 #define DONT_TILE 0
 #define INSERT_MIN_ONLY 1
 const int VEC_DIM = 128;
-const int NEIGHB_NUM_PER_LIST = 40;
+const int NEIGHB_NUM_PER_LIST = 64;
+const int INSERT_IT_NUM = NEIGHB_NUM_PER_LIST / 32 + 
+                          (NEIGHB_NUM_PER_LIST % 32 != 0);
 #if INSERT_MIN_ONLY
 const int NEIGHB_CACHE_NUM = 1;
 #else
@@ -39,7 +41,6 @@ const int NEIGHB_CACHE_NUM = 10;
 #endif
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
-const int THREADS_PER_LIST = 32;
 const int SAMPLE_NUM = 30;
 const int SKEW_DIM = VEC_DIM + 1;
 
@@ -181,6 +182,16 @@ __device__ __forceinline__ ResultElement __shfl_down_sync(const int mask,
     return res;
 }
 
+__device__ __forceinline__ ResultElement __shfl_up_sync(const int mask,
+                                                        ResultElement var,
+                                                        const int delta,
+                                                        const int width = warpSize) {
+    ResultElement res;
+    res.distance = __shfl_up_sync(mask, var.distance, delta, width);
+    res.label = __shfl_up_sync(mask, var.label, delta, width);
+    return res;
+}
+
 template <typename T>
 __device__ __forceinline__ T Min(const T &a, const T &b) {
     return a < b ? a : b;
@@ -194,15 +205,14 @@ __device__ ResultElement GetMinElement(const int *neighbs_id,
     int y_num = tail_pos - head_pos;
     
     int tx = threadIdx.x;
-    int lane_id = tx % THREADS_PER_LIST;
+    int lane_id = tx % warpSize;
     ResultElement min_elem = ResultElement(1e10, LARGE_INT);
 
-    int it_num = GetItNum(y_num, THREADS_PER_LIST);
+    int it_num = GetItNum(y_num, warpSize);
     for (int it = 0; it < it_num; it++) {
-        // bitonic sort
         ResultElement elem;
-        elem.label = neighbs_id[it * THREADS_PER_LIST + lane_id];
-        int current_pos = head_pos + it * THREADS_PER_LIST + lane_id;
+        elem.label = neighbs_id[it * warpSize + lane_id];
+        int current_pos = head_pos + it * warpSize + lane_id;
         if (current_pos < tail_pos) {
             elem.distance = distances[current_pos];
         } else {
@@ -219,7 +229,7 @@ __device__ ResultElement GetMinElement(const int *neighbs_id,
     head_pos = list_id * (list_id + 3) / 2; // 0   2   5   9   14
     for (int it = 0; it < 2; it++) {
         ResultElement elem;
-        int no = it * THREADS_PER_LIST + lane_id;
+        int no = it * warpSize + lane_id;
         elem.label = neighbs_id[no + list_id + 1];
         int current_pos = head_pos + no * (no + list_id * 2 + 1) / 2;
         if (current_pos < distances_num) {
@@ -248,14 +258,13 @@ __device__ ResultElement GetMinElement2(const int list_id,
     int tail_pos = head_pos + num_old;
 
     int tx = threadIdx.x;
-    int lane_id = tx % THREADS_PER_LIST;
+    int lane_id = tx % warpSize;
     ResultElement min_elem = ResultElement(1e10, LARGE_INT);
 
-    int it_num = GetItNum(y_num, THREADS_PER_LIST);
+    int it_num = GetItNum(y_num, warpSize);
     for (int it = 0; it < it_num; it++) {
-        // bitonic sort
         ResultElement elem;
-        int no = it * THREADS_PER_LIST + lane_id;
+        int no = it * warpSize + lane_id;
         elem.label = old_neighbs[no];
         int current_pos = head_pos + no;
         if (current_pos < tail_pos) {
@@ -284,13 +293,13 @@ __device__ ResultElement GetMinElement3(const int list_id,
                                         const float *vectors) {
     int head_pos = list_id - num_new;
     int tx = threadIdx.x;
-    int lane_id = tx % THREADS_PER_LIST;
+    int lane_id = tx % warpSize;
     ResultElement min_elem = ResultElement(1e10, LARGE_INT);
 
-    int it_num = GetItNum(num_new, THREADS_PER_LIST);
+    int it_num = GetItNum(num_new, warpSize);
     for (int it = 0; it < it_num; it++) {
         ResultElement elem;
-        int no = it * THREADS_PER_LIST + lane_id;
+        int no = it * warpSize + lane_id;
         elem.label = new_neighbs[no];
         int current_pos = head_pos + no * num_old;
         if (current_pos < distances_num) {
@@ -308,15 +317,23 @@ __device__ ResultElement GetMinElement3(const int list_id,
     return min_elem;
 }
 
+__device__ uint GetNthSetBitPos(uint mask, int nth) {
+    uint res;
+    asm("fns.b32 %0,%1,%2,%3;"
+        : "=r"(res) : "r"(mask), "r"(0),"r"(nth));
+    return res;
+}
+
+#if !INSERT_MIN_ONLY
 __device__ __forceinline__ ResultElement XorSwap(ResultElement x, int mask, int dir) {
     ResultElement y;
-    y.distance = __shfl_xor_sync(0xffffffff, x.distance, mask, THREADS_PER_LIST);
-    y.label = __shfl_xor_sync(0xffffffff, x.label, mask, THREADS_PER_LIST);
+    y.distance = __shfl_xor_sync(0xffffffff, x.distance, mask, warpSize);
+    y.label = __shfl_xor_sync(0xffffffff, x.label, mask, warpSize);
     return x < y == dir ? y : x;
 }
 
-__device__ __forceinline__ int Bfe(int lane_id, int pos) {
-    int res;
+__device__ __forceinline__ uint Bfe(uint lane_id, uint pos) {
+    uint res;
     asm("bfe.u32 %0,%1,%2,%3;"
         : "=r"(res) : "r"(lane_id), "r"(pos),"r"(1));
     return res;
@@ -353,15 +370,15 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
     int y_num = tail_pos - head_pos;
 
     int tx = threadIdx.x;
-    int lane_id = tx % THREADS_PER_LIST;
+    int lane_id = tx % warpSize;
     int pos_in_lists = list_id * NEIGHB_CACHE_NUM;
 
-    int it_num = GetItNum(y_num, THREADS_PER_LIST);
+    int it_num = GetItNum(y_num, warpSize);
     for (int it = 0; it < it_num; it++) {
         // bitonic sort
         ResultElement sort_elem;
-        sort_elem.label = neighbs_id[it * THREADS_PER_LIST + lane_id];
-        int current_pos = head_pos + it * THREADS_PER_LIST + lane_id;
+        sort_elem.label = neighbs_id[it * warpSize + lane_id];
+        int current_pos = head_pos + it * warpSize + lane_id;
         if (current_pos < tail_pos) {
             sort_elem.distance = distances[current_pos];
         } else {
@@ -373,19 +390,19 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
         int offset;
         for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
-            if (lane_id == THREADS_PER_LIST - 1) {
+            if (lane_id == warpSize - 1) {
                 if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
-            flag = __shfl_sync(0xffffffff, flag, THREADS_PER_LIST - 1, 
-                               THREADS_PER_LIST);
+            flag = __shfl_sync(0xffffffff, flag, warpSize - 1, 
+                               warpSize);
             if (!flag) break;
             ResultElement tmp;
             tmp.distance = __shfl_up_sync(0xffffffff, sort_elem.distance, 
-                                          1, THREADS_PER_LIST);
+                                          1, warpSize);
             tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 
-                                       1, THREADS_PER_LIST);
+                                       1, warpSize);
             sort_elem = tmp;
         }
         if (lane_id < offset) {
@@ -403,7 +420,7 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
     head_pos = list_id * (list_id + 3) / 2; // 0   2   5   9   14
     for (int it = 0; it < 2; it++) {
         ResultElement sort_elem;
-        int no = it * THREADS_PER_LIST + lane_id;
+        int no = it * warpSize + lane_id;
         sort_elem.label = neighbs_id[no + list_id + 1];
         int current_pos = head_pos + no * (no + list_id * 2 + 1) / 2;
         if (current_pos < distances_num) {
@@ -416,19 +433,19 @@ __device__ void UpdateLocalKNNLists(ResultElement *knn_list,
         int offset;
         for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
-            if (lane_id == THREADS_PER_LIST - 1) {
+            if (lane_id == warpSize - 1) {
                 if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
-            flag = __shfl_sync(0xffffffff, flag, THREADS_PER_LIST - 1, 
-                               THREADS_PER_LIST);
+            flag = __shfl_sync(0xffffffff, flag, warpSize - 1, 
+                               warpSize);
             if (!flag) break;
             ResultElement tmp;
             tmp.distance = __shfl_up_sync(0xffffffff, sort_elem.distance, 
-                                          1, THREADS_PER_LIST);
+                                          1, warpSize);
             tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 
-                                       1, THREADS_PER_LIST);
+                                       1, warpSize);
             sort_elem = tmp;
         }
         if (lane_id < offset) {
@@ -458,14 +475,14 @@ __device__ void UpdateLocalNewKNNLists(ResultElement *knn_list,
     int tail_pos = head_pos + num_old;
 
     int tx = threadIdx.x;
-    int lane_id = tx % THREADS_PER_LIST;
+    int lane_id = tx % warpSize;
     int pos_in_lists = list_id * NEIGHB_CACHE_NUM;
 
-    int it_num = GetItNum(y_num, THREADS_PER_LIST);
+    int it_num = GetItNum(y_num, warpSize);
     for (int it = 0; it < it_num; it++) {
         // bitonic sort
         ResultElement sort_elem;
-        int no = it * THREADS_PER_LIST + lane_id;
+        int no = it * warpSize + lane_id;
         sort_elem.label = old_neighbs[no];
         int current_pos = head_pos + no;
         if (current_pos < tail_pos) {
@@ -479,19 +496,19 @@ __device__ void UpdateLocalNewKNNLists(ResultElement *knn_list,
         int offset;
         for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
-            if (lane_id == THREADS_PER_LIST - 1) {
+            if (lane_id == warpSize - 1) {
                 if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
-            flag = __shfl_sync(0xffffffff, flag, THREADS_PER_LIST - 1, 
-                               THREADS_PER_LIST);
+            flag = __shfl_sync(0xffffffff, flag, warpSize - 1, 
+                               warpSize);
             if (!flag) break;
             ResultElement tmp;
             tmp.distance = __shfl_up_sync(0xffffffff, sort_elem.distance, 
-                                          1, THREADS_PER_LIST);
+                                          1, warpSize);
             tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 
-                                       1, THREADS_PER_LIST);
+                                       1, warpSize);
             sort_elem = tmp;
         }
         if (lane_id < offset) {
@@ -519,13 +536,13 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
                                        const float *vectors) {
     int head_pos = list_id - num_new;
     int tx = threadIdx.x;
-    int lane_id = tx % THREADS_PER_LIST;
+    int lane_id = tx % warpSize;
     int pos_in_lists = list_id * NEIGHB_CACHE_NUM;
 
-    int it_num = GetItNum(num_new, THREADS_PER_LIST);
+    int it_num = GetItNum(num_new, warpSize);
     for (int it = 0; it < it_num; it++) {
         ResultElement sort_elem;
-        int no = it * THREADS_PER_LIST + lane_id;
+        int no = it * warpSize + lane_id;
         sort_elem.label = new_neighbs[no];
         int current_pos = head_pos + no * num_old;
         if (current_pos < distances_num) {
@@ -538,19 +555,19 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
         int offset;
         for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
             int flag = 1;
-            if (lane_id == THREADS_PER_LIST - 1) {
+            if (lane_id == warpSize - 1) {
                 if (sort_elem < knn_list[pos_in_lists + offset]) {
                     flag = 0;
                 }
             }
-            flag = __shfl_sync(0xffffffff, flag, THREADS_PER_LIST - 1, 
-                               THREADS_PER_LIST);
+            flag = __shfl_sync(0xffffffff, flag, warpSize - 1, 
+                               warpSize);
             if (!flag) break;
             ResultElement tmp;
             tmp.distance = __shfl_up_sync(0xffffffff, sort_elem.distance, 
-                                          1, THREADS_PER_LIST);
+                                          1, warpSize);
             tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 
-                                       1, THREADS_PER_LIST);
+                                       1, warpSize);
             sort_elem = tmp;
         }
         if (lane_id < offset) {
@@ -565,6 +582,7 @@ __device__ void UpdateLocalOldKNNLists(ResultElement *knn_list,
             knn_list[pos_in_lists + lane_id] = sort_elem;
     }
 }
+#endif
 
 __device__ void UniqueMergeSequential(const ResultElement* A, const int m,
                                       const ResultElement* B, const int n,
@@ -646,44 +664,146 @@ __device__ void MergeLocalGraphWithGlobalGraph(const ResultElement* local_knn_gr
     }
 }
 
-__global__ void InsertToGlobalGraph(const ResultElement elem, const int list_id,
+__device__ void InsertToGlobalGraph(ResultElement elem, 
+                                    const int local_id, const int global_id,
                                     ResultElement *global_knn_graph,
                                     int *global_locks) {
-    __shared__ ResultElement knn_list_cache[NEIGHB_NUM_PER_LIST];
     int tx = threadIdx.x;
     int lane_id = tx % warpSize;
-    bool loop_flag = false;
+    int global_pos_base = global_id * NEIGHB_NUM_PER_LIST;
+    elem.distance = __shfl_sync(FULL_MASK, elem.distance, 0);
+    elem.label = __shfl_sync(FULL_MASK, elem.label, 0);
+    int loop_flag = 0;
     do {
-        loop_flag = atomicCAS(&global_locks[list_id], 0, 1);
-        __shfl_sync(FULL_MASK, loop_flag, 0);
-        if (loop_flag == 0) {
-            ResultElement *knn_list = 
-                &global_knn_graph[list_id * NEIGHB_NUM_PER_LIST];
-            int num_it = GetItNum(NEIGHB_NUM_PER_LIST, warpSize);
-            for (int i = 0; i < num_it; i++) {
-                int idx = i * warpSize + tx;
-                knn_list_cache[idx] = knn_list[idx];
+        if (lane_id == 0)
+            loop_flag = atomicCAS(&global_locks[global_id], 0, 1) == 0;
+        loop_flag = __shfl_sync(FULL_MASK, loop_flag, 0);
+        if (loop_flag == 1) {
+            ResultElement knn_list_frag[INSERT_IT_NUM];
+            for (int i = 0; i < INSERT_IT_NUM; i++) {
+                int local_pos = i * warpSize + lane_id;
+                int global_pos = global_pos_base + local_pos;
+                if (local_pos < NEIGHB_NUM_PER_LIST)
+                    knn_list_frag[i] = global_knn_graph[global_pos];
+                else
+                    knn_list_frag[i] = ResultElement(1e10, LARGE_INT);
             }
-            if (elem >= knn_list_cache[NEIGHB_NUM_PER_LIST - 1]) ;
-            else {
-                int i = 0;
-                while (i < NEIGHB_NUM_PER_LIST && knn_list_cache[i] < elem) {
-                    i++;
+
+            // int flag;
+            // if (lane_id == 0)
+            //     flag = atomicCAS(&for_check, 0, 1);
+            // flag = __shfl_sync(FULL_MASK, flag, 0);
+            // if (!flag) {
+            //     printf("%d %f %d %f %d\n", lane_id, knn_list_frag[0].distance,
+            //            knn_list_frag[0].label, knn_list_frag[1].distance,
+            //            knn_list_frag[1].label);
+            // }
+            
+            int pos_to_insert = -1;
+            for (int i = 0; i < INSERT_IT_NUM; i++) {
+                ResultElement prev_elem = 
+                    __shfl_up_sync(FULL_MASK, knn_list_frag[i], 1);
+                if (lane_id == 0) prev_elem = ResultElement(-1e10, -1);
+                if (elem > prev_elem && elem < knn_list_frag[i])
+                    pos_to_insert = i * warpSize + lane_id;
+                else if (elem == prev_elem || elem == knn_list_frag[i])
+                    pos_to_insert = -2;
+                
+                // if (global_id == 0) {
+                //     printf("%d %f %d %f %d %f %d %d\n", lane_id,
+                //         prev_elem.distance, prev_elem.label, 
+                //         elem.distance, elem.label,
+                //         knn_list_frag[i].distance, knn_list_frag[i].label,
+                //         pos_to_insert);
+                // }
+                if (__ballot_sync(FULL_MASK, pos_to_insert == -2))
+                    break;
+                uint mask = __ballot_sync(FULL_MASK, pos_to_insert >= 0);
+                // if (__popc(mask) != 1 && mask) {
+                //     int flag;
+                //     if (lane_id == 0)
+                //         flag = atomicCAS(&for_check, 0, 1);
+                //     flag = __shfl_sync(FULL_MASK, flag, 0);
+                //     if (!flag) {
+                //         if (lane_id == 0) printf("%d\n", global_id);
+                //         printf("%d %f %d %f %d\n", lane_id, knn_list_frag[0].distance,
+                //                knn_list_frag[0].label, knn_list_frag[1].distance,
+                //                knn_list_frag[1].label);
+                //         printf("%d %f %d %f %d %f %d %d\n", lane_id,
+                //                 prev_elem.distance, prev_elem.label, 
+                //                 elem.distance, elem.label,
+                //                 knn_list_frag[i].distance, knn_list_frag[i].label,
+                //                 pos_to_insert);
+                //     }
+                // }
+                if (mask) {
+                    uint set_lane_id = GetNthSetBitPos(mask, 1);
+                    pos_to_insert = __shfl_sync(FULL_MASK, pos_to_insert,
+                                                set_lane_id);
+                    // assert(false);
+                    break;
                 }
-                if (knn_list_cache[i] != elem) {
-                    for (int j = NEIGHB_NUM_PER_LIST - 1; j > i && j > 0; j--) {
-                        knn_list_cache[j] = knn_list_cache[j-1];
+            }
+
+            // int tmp_pos_to_insert = pos_to_insert;
+            // if (lane_id == 0) {
+            //     if (elem < global_knn_graph[global_pos_base]) {
+            //         pos_to_insert = 0;
+            //     }
+            //     else if (elem >= global_knn_graph[global_pos_base + 
+            //                                       NEIGHB_NUM_PER_LIST - 1]) {
+            //     }
+            //     else {
+            //         for (int i = 1; i < NEIGHB_NUM_PER_LIST; i++) {
+            //             auto prev_elem = global_knn_graph[global_pos_base + i - 1];
+            //             auto next_elem = global_knn_graph[global_pos_base + i];
+            //             if (elem > prev_elem && elem < next_elem) {
+            //                 pos_to_insert = i;
+            //             } else if (elem == prev_elem || elem == next_elem) {
+            //                 break;
+            //             }
+            //         }
+            //     }
+            //     if (pos_to_insert != tmp_pos_to_insert) {
+            //         int flag = atomicCAS(&for_check, 0, 1);
+            //         if (!flag) {
+            //             printf("%d %d\n", pos_to_insert, tmp_pos_to_insert);
+            //             printf("%d %f %d\n", global_id, elem.distance, elem.label);
+            //             for (int i = 0; i < NEIGHB_NUM_PER_LIST; i++) {
+            //                 printf("%d %f %d\n", i, 
+            //                        global_knn_graph[global_pos_base + i].distance,
+            //                        global_knn_graph[global_pos_base + i].label);
+            //             }
+            //         }
+            //     }
+            // }
+            // pos_to_insert = __shfl_sync(FULL_MASK, pos_to_insert, 0);
+
+            // if (lane_id == 0 && pos_to_insert >= 0) {
+            //     for (int i = NEIGHB_NUM_PER_LIST - 1; i > pos_to_insert; i--) {
+            //         global_knn_graph[global_pos_base + i]
+            //             = global_knn_graph[global_pos_base + i - 1];
+            //     }
+            //     if (pos_to_insert < NEIGHB_NUM_PER_LIST)
+            //         global_knn_graph[global_pos_base + pos_to_insert] = elem;
+            // }
+            if (pos_to_insert >= 0) {
+                for (int i = 0; i < INSERT_IT_NUM; i++) {
+                    int local_pos = i * warpSize + lane_id;
+                    if (local_pos > pos_to_insert) {
+                        local_pos++;
+                    } else if (local_pos == pos_to_insert) {
+                        global_knn_graph[global_pos_base + local_pos] = elem;
+                        local_pos++;
                     }
-                    knn_list_cache[i] = elem;
+                    int global_pos = global_pos_base + local_pos;
+                    if (local_pos < NEIGHB_NUM_PER_LIST)
+                        global_knn_graph[global_pos] = knn_list_frag[i];
                 }
-            }
-            for (int i = 0; i < num_it; i++) {
-                int idx = i * warpSize + tx;
-                knn_list[idx] = knn_list_cache[idx];
             }
         }
         __threadfence();
-        if (loop_flag && lane_id == 0) { atomicExch(&global_locks[list_id], 0);}
+        if (loop_flag && lane_id == 0) { atomicExch(&global_locks[global_id], 0);}
         __nanosleep(32);
     } while (!loop_flag);
 }
@@ -696,16 +816,12 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
 
     __shared__ float *shared_vectors, *distances;
     __shared__ int *neighbors;
-    __shared__ ResultElement *knn_graph_cache;
     __shared__ int pos_gnew, num_new;
 
     int tx = threadIdx.x;
-    int lane_id = tx % warpSize;
     if (tx == 0) {
         shared_vectors = (float *)buffer;
-        knn_graph_cache = (ResultElement *)buffer;
-        size_t offset = max(num_new_max * SKEW_DIM * sizeof(float),
-                            num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement));
+        size_t offset = num_new_max * SKEW_DIM * sizeof(float);
         distances = 
             (float *)((char *)buffer + offset);
         neighbors = 
@@ -772,25 +888,20 @@ __global__ void NewNeighborsCompareKernel(ResultElement *knn_graph, int *global_
     }
     #endif
     int list_size = NEIGHB_CACHE_NUM;
-    int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
+    int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
     for (int j = 0; j < num_it3; j++) {
-        int list_id = j * (block_dim_x / THREADS_PER_LIST) + tx / THREADS_PER_LIST;
+        int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
         if (list_id >= neighb_num) continue;
         #if INSERT_MIN_ONLY
         ResultElement min_elem = GetMinElement(neighbors, list_id, list_size,
                                                distances, calc_num);
-        if (lane_id == 0) {
-            knn_graph_cache[list_id] = min_elem;
-        }
+        InsertToGlobalGraph(min_elem, list_id, neighbors[list_id],
+                            knn_graph, global_locks);
         #else
         UpdateLocalKNNLists(knn_graph_cache, neighbors, 
                             list_id, list_size, distances, calc_num);
         #endif
     }
-    __syncthreads();
-    MergeLocalGraphWithGlobalGraph(knn_graph_cache, NEIGHB_CACHE_NUM, neighbors,
-                                   neighb_num, knn_graph, global_locks);
-    __syncthreads();
 }
 
 
@@ -882,11 +993,13 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
             knn_graph_cache[pos] = ResultElement(1e10, LARGE_INT);
     }
     int list_size = NEIGHB_CACHE_NUM;
-    int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
+    int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
     for (int j = 0; j < num_it3; j++) {
-        int list_id = j * (block_dim_x / THREADS_PER_LIST) + 
-                        tx / THREADS_PER_LIST;
+        int list_id = j * (block_dim_x / warpSize) + 
+                        tx / warpSize;
         if (list_id >= neighb_num) continue;
+        #if INSERT_MIN_ONLY
+        #else
         if (list_id < num_new) {
             UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size, 
                                    neighbors + num_new, num_old, 
@@ -897,6 +1010,7 @@ __global__ void NewOldNeighborsCompareKernel(ResultElement *knn_graph, int *glob
                                    neighbors + num_new, num_old, 
                                    distances, calc_num, vectors);
         }
+        #endif
     }
     __syncthreads();
     MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
@@ -972,19 +1086,14 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
 
     __shared__ float *distances;
     __shared__ int *neighbors;
-    __shared__ ResultElement *knn_graph_cache;
 
     __shared__ int pos_gnew, pos_gold, num_new, num_old;
 
-    int neighb_num_max = num_new_max + num_old_max;
     int tx = threadIdx.x;
-    int lane_id = tx % warpSize;
     if (tx == 0) {
         distances = (float *)buffer;
         neighbors = 
             (int *)((char *)distances + (num_new_max * num_old_max) * sizeof(float));
-        knn_graph_cache =
-            (ResultElement *)((char *)neighbors + neighb_num_max * sizeof(int));
     }
     __syncthreads();
 
@@ -1028,10 +1137,9 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
     }
     #endif
     int list_size = NEIGHB_CACHE_NUM;
-    int num_it3 = GetItNum(neighb_num, block_dim_x / THREADS_PER_LIST);
+    int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
     for (int j = 0; j < num_it3; j++) {
-        int list_id = j * (block_dim_x / THREADS_PER_LIST) + 
-                        tx / THREADS_PER_LIST;
+        int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
         if (list_id >= neighb_num) continue;
         #if INSERT_MIN_ONLY
         ResultElement min_elem(1e10, LARGE_INT);
@@ -1044,10 +1152,9 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
                                                     neighbors, num_new, 
                                                     neighbors + num_new, num_old, 
                                                     distances, calc_num, vectors));
-        }  
-        if (lane_id == 0) {
-            knn_graph_cache[list_id] = min_elem;
         }
+        InsertToGlobalGraph(min_elem, list_id, neighbors[list_id],
+                            knn_graph, global_locks);
         #else
         if (list_id < num_new) {
             UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size, 
@@ -1061,9 +1168,6 @@ __global__ void TiledNewOldNeighborsCompareKernel(ResultElement *knn_graph, int 
         }
         #endif
     }
-    __syncthreads();
-    MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
-                                   neighb_num, knn_graph, global_locks);
     __syncthreads();
 }
 
@@ -1206,9 +1310,10 @@ float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     // cerr << "Start kernel." << endl;
     const int num_new_max = GetMaxListSize(newg);
     const int num_old_max = GetMaxListSize(oldg);
+    cerr << "Num new max: " << num_new_max << endl;
+    cerr << "Num old max: " << num_old_max << endl;
     size_t shared_memory_size = 
-        max(num_new_max * SKEW_DIM * sizeof(float),
-            num_new_max * NEIGHB_CACHE_NUM * sizeof(ResultElement)) + 
+        num_new_max * SKEW_DIM * sizeof(float) + 
         (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
         num_new_max * sizeof(int);
 
@@ -1247,8 +1352,7 @@ float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
     #else
     block_size = dim3(TILE_WIDTH * TILE_WIDTH);
     shared_memory_size = (num_new_max * num_old_max) * sizeof(float) + 
-                        neighb_num_max * sizeof(int) + 
-                        neighb_num_max * NEIGHB_CACHE_NUM * sizeof(ResultElement);
+                         neighb_num_max * sizeof(int);
     cerr << "Shmem tiled kernel2 costs: " << shared_memory_size << endl;
     TiledNewOldNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>
         (knn_graph_dev, global_locks_dev, vectors_dev, 

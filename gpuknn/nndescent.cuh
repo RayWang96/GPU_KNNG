@@ -21,7 +21,6 @@ namespace gpuknn {
             return this->distance < other.distance;
         }
     };
-
     vector<vector<NNDItem>> NNDescent(const float* vectors, const int vecs_size, const int vecs_dim);
 }
 #endif

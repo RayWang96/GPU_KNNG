@@ -170,12 +170,15 @@ unsigned int __match_any_sync(unsigned mask, T value) {};
 template <typename T>
 unsigned int __match_all_sync(unsigned mask, T value, int* pred) {};
 
+uint __ballot_sync(unsigned mask, int predicate) {};
 int __any_sync(unsigned mask, int pred) {};
 
 template <typename T>
 T __shfl_sync(unsigned mask, T var, int srcLane, int width = warpSize) {};
-template <typename T>
-T __shfl_up_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
+float __shfl_up_sync(unsigned mask, float var, unsigned int delta, int width = warpSize) {};
+int __shfl_up_sync(unsigned mask, int var, unsigned int delta, int width = warpSize) {};
+// template <typename T>
+// T __shfl_up_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
 // template <typename T>
 // T __shfl_down_sync(unsigned mask, T var, unsigned int delta, int width = warpSize) {};
 float __shfl_down_sync(unsigned mask, float var, unsigned int delta, int width = warpSize) {};
