@@ -6,7 +6,7 @@ add_library(knncuda STATIC
     gpuknn/knncuda.cuh
     gpuknn/nndescent.cu
     gpuknn/nndescent.cuh
-    gpuknn/result_element.cuh
+    gpuknn/nndescent_element.cuh
     tools/distfunc.hpp
     tools/filetool.hpp
     xmuknn.h
