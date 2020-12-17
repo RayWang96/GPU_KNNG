@@ -70,7 +70,7 @@ void TestCUDANNDescent() {
     out << i << " " << x.size() << " ";
     for (auto y : x) {
       // out << y.distance << " " << y.id << "\t";
-      out << y.id << "\t";
+      out << y.label() << "\t";
     }
     out << endl;
   }

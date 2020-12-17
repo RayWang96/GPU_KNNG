@@ -52,7 +52,7 @@ const int MAX_SHMEM = 49152;
 __device__ int for_check = 0;
 
 void GetNBGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
-                vector<vector<gpuknn::NNDItem>> &knn_graph,
+                vector<vector<NNDElement>> &knn_graph,
                 const float *vectors, const int vecs_size, const int vecs_dim) {
   auto time1 = chrono::steady_clock::now();
   int sample_num = SAMPLE_NUM;
@@ -67,13 +67,13 @@ void GetNBGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
     int cnt = 0;
     for (int j = 0; j < knn_graph[i].size(); j++) {
       auto &item = knn_graph[i][j];
-      if (item.visited) {
-        graph_old[i].push_back(item.id);
+      if (!item.IsNew()) {
+        graph_old[i].push_back(item.label());
       } else {
         if (cnt < sample_num) {
-          graph_new[i].push_back(item.id);
+          graph_new[i].push_back(item.label());
           cnt++;
-          item.visited = true;
+          item.MarkOld();
         }
       }
       if (cnt >= sample_num) break;
@@ -184,8 +184,8 @@ __device__ __forceinline__ NNDElement
 __shfl_down_sync(const int mask, NNDElement var, const int delta,
                  const int width = warpSize) {
   NNDElement res;
-  res.distance = __shfl_down_sync(mask, var.distance, delta, width);
-  res.label = __shfl_down_sync(mask, var.label, delta, width);
+  res.distance_ = __shfl_down_sync(mask, var.distance_, delta, width);
+  res.label_ = __shfl_down_sync(mask, var.label_, delta, width);
   return res;
 }
 
@@ -193,8 +193,8 @@ __device__ __forceinline__ NNDElement
 __shfl_up_sync(const int mask, NNDElement var, const int delta,
                const int width = warpSize) {
   NNDElement res;
-  res.distance = __shfl_up_sync(mask, var.distance, delta, width);
-  res.label = __shfl_up_sync(mask, var.label, delta, width);
+  res.distance_ = __shfl_up_sync(mask, var.distance_, delta, width);
+  res.label_ = __shfl_up_sync(mask, var.label_, delta, width);
   return res;
 }
 
@@ -217,13 +217,12 @@ __device__ NNDElement GetMinElement(const int *neighbs_id, const int list_id,
   int it_num = GetItNum(y_num, warpSize);
   for (int it = 0; it < it_num; it++) {
     NNDElement elem;
-    elem.label = neighbs_id[it * warpSize + lane_id];
+    elem.SetLabel(neighbs_id[it * warpSize + lane_id]);
     int current_pos = head_pos + it * warpSize + lane_id;
     if (current_pos < tail_pos) {
-      elem.distance = distances[current_pos];
+      elem.SetDistance(distances[current_pos]);
     } else {
-      elem.distance = 1e10;
-      elem.label = LARGE_INT;
+      elem = NNDElement(1e10, LARGE_INT);
     }
     for (int offset = warpSize / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
@@ -236,13 +235,12 @@ __device__ NNDElement GetMinElement(const int *neighbs_id, const int list_id,
   for (int it = 0; it < 2; it++) {
     NNDElement elem;
     int no = it * warpSize + lane_id;
-    elem.label = neighbs_id[no + list_id + 1];
+    elem.SetLabel(neighbs_id[no + list_id + 1]);
     int current_pos = head_pos + no * (no + list_id * 2 + 1) / 2;
     if (current_pos < distances_num) {
-      elem.distance = distances[current_pos];
+      elem.SetDistance(distances[current_pos]);
     } else {
-      elem.distance = 1e10;
-      elem.label = LARGE_INT;
+      elem = NNDElement(1e10, LARGE_INT);
     }
     for (int offset = warpSize / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
@@ -269,13 +267,12 @@ __device__ NNDElement GetMinElement2(const int list_id, const int list_size,
   for (int it = 0; it < it_num; it++) {
     NNDElement elem;
     int no = it * warpSize + lane_id;
-    elem.label = old_neighbs[no];
+    elem.SetLabel(old_neighbs[no]);
     int current_pos = head_pos + no;
     if (current_pos < tail_pos) {
-      elem.distance = distances[current_pos];
+      elem.SetDistance(distances[current_pos]);
     } else {
-      elem.distance = 1e10;
-      elem.label = LARGE_INT;
+      elem = NNDElement(1e10, LARGE_INT);
     }
     for (int offset = warpSize / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
@@ -301,13 +298,12 @@ __device__ NNDElement GetMinElement3(const int list_id, const int list_size,
   for (int it = 0; it < it_num; it++) {
     NNDElement elem;
     int no = it * warpSize + lane_id;
-    elem.label = new_neighbs[no];
+    elem.SetLabel(new_neighbs[no]);
     int current_pos = head_pos + no * num_old;
     if (current_pos < distances_num) {
-      elem.distance = distances[current_pos];
+      elem.SetDistance(distances[current_pos]);
     } else {
-      elem.distance = 1e10;
-      elem.label = LARGE_INT;
+      elem = NNDElement(1e10, LARGE_INT);
     }
     for (int offset = warpSize / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
@@ -630,7 +626,7 @@ __device__ void MergeLocalGraphWithGlobalGraph(
     bool loop_flag = false;
     do {
       if (loop_flag = atomicCAS(&global_locks[neighb_id], 0, 1) == 0) {
-        if (local_knn_graph[tx * NEIGHB_CACHE_NUM].label != LARGE_INT) {
+        if (local_knn_graph[tx * NEIGHB_CACHE_NUM].label() != LARGE_INT) {
           UniqueMergeSequential(
               &local_knn_graph[tx * NEIGHB_CACHE_NUM], NEIGHB_CACHE_NUM,
               &global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST],
@@ -656,8 +652,8 @@ __device__ void InsertToGlobalGraph(NNDElement elem, const int local_id,
   int tx = threadIdx.x;
   int lane_id = tx % warpSize;
   int global_pos_base = global_id * NEIGHB_NUM_PER_LIST;
-  elem.distance = __shfl_sync(FULL_MASK, elem.distance, 0);
-  elem.label = __shfl_sync(FULL_MASK, elem.label, 0);
+  elem.distance_ = __shfl_sync(FULL_MASK, elem.distance_, 0);
+  elem.label_ = __shfl_sync(FULL_MASK, elem.label_, 0);
   int loop_flag = 0;
   do {
     if (lane_id == 0)
@@ -1177,15 +1173,15 @@ pair<int *, int *> ReadGraphToGlobalMemory(const Graph &graph) {
 
 __global__ void TestKernel(NNDElement *knn_graph) {
   for (int i = 0; i < 10000 * 30; i++) {
-    if (knn_graph[i].distance == 0 && knn_graph[i].label == 0) {
-      printf("check %d %f\n", i, knn_graph[i].distance);
+    if (knn_graph[i].distance() == 0 && knn_graph[i].label() == 0) {
+      printf("check %d %f\n", i, knn_graph[i].distance());
     }
   }
   return;
 }
 
 NNDElement *ReadKNNGraphToGlobalMemory(
-    const vector<vector<gpuknn::NNDItem>> &knn_graph) {
+    const vector<vector<NNDElement>> &knn_graph) {
   int k = knn_graph[0].size();
   NNDElement *knn_graph_dev;
   NNDElement *knn_graph_host = new NNDElement[knn_graph.size() * k];
@@ -1193,7 +1189,7 @@ NNDElement *ReadKNNGraphToGlobalMemory(
   for (int i = 0; i < knn_graph.size(); i++) {
     for (int j = 0; j < k; j++) {
       const auto &item = knn_graph[i][j];
-      knn_graph_host[idx++] = NNDElement(item.distance, item.id);
+      knn_graph_host[idx++] = item;
     }
   }
 
@@ -1215,21 +1211,20 @@ NNDElement *ReadKNNGraphToGlobalMemory(
   return knn_graph_dev;
 }
 
-void ToHostGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
+void ToHostGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
                  const NNDElement *knn_graph, const int size,
                  const int neighb_num) {
   auto &origin_knn_graph = *origin_knn_graph_ptr;
-  vector<gpuknn::NNDItem> neighb_list;
+  vector<NNDElement> neighb_list;
   for (int i = 0; i < size; i++) {
     neighb_list.clear();
     for (int j = 0; j < neighb_num; j++) {
-      NNDElement tmp = knn_graph[i * neighb_num + j];
-      neighb_list.emplace_back(tmp.label, false, tmp.distance);
+      neighb_list.push_back(knn_graph[i * neighb_num + j]);
     }
     for (int j = 0; j < neighb_num; j++) {
       for (int k = 0; k < neighb_num; k++) {
-        if (neighb_list[j].id == origin_knn_graph[i][k].id) {
-          neighb_list[j].visited = true;
+        if (neighb_list[j] == origin_knn_graph[i][k]) {
+          neighb_list[j].MarkOld();
           break;
         }
       }
@@ -1246,7 +1241,7 @@ int GetMaxListSize(const Graph &g) {
   return res;
 }
 
-float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
+float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
                   float *vectors_dev, const Graph &newg, const Graph &oldg,
                   const int k) {
   float kernel_time = 0;
@@ -1366,7 +1361,7 @@ float UpdateGraph(vector<vector<gpuknn::NNDItem>> *origin_knn_graph_ptr,
 }
 
 namespace gpuknn {
-vector<vector<NNDItem>> NNDescent(const float *vectors, const int vecs_size,
+vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
                                   const int vecs_dim) {
   int k = NEIGHB_NUM_PER_LIST;
   int iteration = 6;
@@ -1383,7 +1378,7 @@ vector<vector<NNDItem>> NNDescent(const float *vectors, const int vecs_size,
     exit(-1);
   }
   Graph result(vecs_size);
-  vector<vector<NNDItem>> g(vecs_size);
+  vector<vector<NNDElement>> g(vecs_size);
   vector<int> tmp_vec;
 
   for (int i = 0; i < vecs_size; i++) {
@@ -1391,25 +1386,22 @@ vector<vector<NNDItem>> NNDescent(const float *vectors, const int vecs_size,
     xmuknn::GenerateRandomSequence(tmp_vec, k, vecs_size, exclusion);
     for (int j = 0; j < k; j++) {
       int nb_id = tmp_vec[j];
-      g[i].emplace_back(nb_id, false, 1e10);
+      g[i].emplace_back(1e10, nb_id);
     }
   }
 
 #pragma omp parallel for
   for (int i = 0; i < vecs_size; i++) {
     for (int j = 0; j < k; j++) {
-      g[i][j].distance =
+      g[i][j].SetDistance(
           GetDistance(vectors + (size_t)i * vecs_dim,
-                      vectors + (size_t)g[i][j].id * vecs_dim, vecs_dim);
+                      vectors + (size_t)g[i][j].label() * vecs_dim, vecs_dim));
     }
   }
 
 #pragma omp parallel for
   for (int i = 0; i < g.size(); i++) {
-    sort(g[i].begin(), g[i].end(), [](NNDItem a, NNDItem b) {
-      if (fabs(a.distance - b.distance) < 1e-10) return a.id < b.id;
-      return a.distance < b.distance;
-    });
+    sort(g[i].begin(), g[i].end());
   }
 
   float iteration_costs = 0;
