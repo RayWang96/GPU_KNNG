@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 #include <mutex>
 #include <tuple>
 #include <utility>
@@ -42,7 +43,7 @@ const int NEIGHB_CACHE_NUM = 10;
 #endif
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
-const int SAMPLE_NUM = 30;
+const int SAMPLE_NUM = 30; // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
 const int SKEW_DIM = VEC_DIM + 1;
 
 #if DONT_TILE
@@ -52,8 +53,8 @@ const int MAX_SHMEM = 49152;
 __device__ int for_check = 0;
 
 void GetNBGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
-                vector<vector<NNDElement>> &knn_graph,
-                const float *vectors, const int vecs_size, const int vecs_dim) {
+                vector<vector<NNDElement>> &knn_graph, const float *vectors,
+                const int vecs_size, const int vecs_dim) {
   auto time1 = chrono::steady_clock::now();
   int sample_num = SAMPLE_NUM;
   Graph &graph_new = *graph_new_ptr;
@@ -78,6 +79,11 @@ void GetNBGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
       }
       if (cnt >= sample_num) break;
     }
+  }
+
+  for (int i = 0; i < knn_graph.size(); i++) {
+    if (graph_old[i].size() > sample_num)
+      graph_old[i].erase(graph_old[i].begin() + sample_num, graph_old[i].end());
   }
   // auto time2 = chrono::steady_clock::now();
   // cerr << "Mark 2: " <<
@@ -178,6 +184,246 @@ void GetNBGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
 __device__ __forceinline__ int GetItNum(const int sum_num,
                                         const int num_per_it) {
   return sum_num / num_per_it + (sum_num % num_per_it != 0);
+}
+
+__global__ void SampleKernel(int *graph_new_dev,
+                                       int *newg_list_size_dev,
+                                       int *graph_old_dev,
+                                       int *oldg_list_size_dev,
+                                       NNDElement *knn_graph, int graph_size) {
+  __shared__ int new_elements_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ int cache1_size;
+  __shared__ int old_elements_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ int cache2_size;
+  int list_id = blockIdx.x;
+  int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
+  int tx = threadIdx.x;
+  if (tx == 0) {
+    cache1_size = cache2_size = 0;
+  }
+  __syncthreads();
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, warpSize);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * warpSize + tx;
+    if (local_pos < NEIGHB_NUM_PER_LIST) {
+      NNDElement elem = knn_graph[knng_base_pos + local_pos];
+      if (elem.IsNew()) {
+        int pos = atomicAdd(&cache1_size, 1);
+        new_elements_cache[pos] = elem.label();
+      } else {
+        int pos = atomicAdd(&cache2_size, 1);
+        old_elements_cache[pos] = elem.label();
+      }
+    }
+  }
+  __syncthreads();
+  if (tx == 0) {
+    cache1_size = min(cache1_size, SAMPLE_NUM);
+    cache2_size = min(cache2_size, SAMPLE_NUM); 
+  }
+  __syncthreads();
+  if (tx == 0) {
+    newg_list_size_dev[list_id] = cache1_size;
+    oldg_list_size_dev[list_id] = cache2_size;
+  }
+  it_num = GetItNum(SAMPLE_NUM, warpSize);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * warpSize + tx;
+    if (local_pos < cache1_size) {
+      graph_new_dev[res_g_base_pos + local_pos] = new_elements_cache[local_pos];
+    }
+    if (local_pos < cache2_size) {
+      graph_old_dev[res_g_base_pos + local_pos] = old_elements_cache[local_pos];
+    }
+  }
+  __syncthreads();
+}
+
+__global__ void PrepareReverseGraph(int *graph_new_dev,
+                                       int *newg_list_size_dev,
+                                       int *graph_old_dev,
+                                       int *oldg_list_size_dev,
+                                       NNDElement *knn_graph, int graph_size) {
+  __shared__ int new_elements_cache[SAMPLE_NUM];
+  __shared__ int cache1_size;
+  __shared__ int old_elements_cache[SAMPLE_NUM];
+  __shared__ int cache2_size;
+  int tx = threadIdx.x;
+  int list_id = blockIdx.x;
+  int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
+  if (tx == 0) {
+    cache1_size = newg_list_size_dev[list_id];
+    cache2_size = oldg_list_size_dev[list_id];
+  }
+  __syncthreads();
+  if (!(cache1_size == 31 && cache2_size == 0)) {
+    printf("%d %d\n", cache1_size, cache2_size);
+    assert(false);
+  }
+  int it_num = GetItNum(SAMPLE_NUM, warpSize);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * warpSize + tx;
+    if (local_pos < cache1_size) {
+      new_elements_cache[local_pos] = 
+        graph_new_dev[res_g_base_pos + local_pos];
+    }
+    if (local_pos < cache2_size) {
+      old_elements_cache[local_pos] = 
+        graph_old_dev[res_g_base_pos + local_pos];
+    }
+  }
+  __syncthreads();
+  it_num = GetItNum(SAMPLE_NUM, warpSize);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * warpSize + tx;
+    if (local_pos < cache1_size) {
+      int rev_list_id = new_elements_cache[local_pos];
+      int pos = atomicAdd(&newg_list_size_dev[rev_list_id], 1);
+      // printf("%d %d %d\n", pos, rev_list_id, list_id);
+      if (pos >= SAMPLE_NUM * 2)
+        atomicExch(&newg_list_size_dev[rev_list_id], SAMPLE_NUM * 2);
+      else
+        graph_new_dev[pos] = list_id;
+    }
+    if (local_pos < cache2_size) {
+      int rev_list_id = old_elements_cache[local_pos];
+      int pos = atomicAdd(&oldg_list_size_dev[rev_list_id], 1);
+      if (pos >= SAMPLE_NUM * 2)
+        atomicExch(&oldg_list_size_dev[rev_list_id], SAMPLE_NUM * 2);
+      else
+        graph_old_dev[pos] = list_id;
+    }
+  }
+}
+
+void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
+                      int *graph_old_dev, int *oldg_list_size_dev,
+                      NNDElement *knn_graph_dev, int graph_size) {
+  auto start = chrono::steady_clock::now();
+  cudaMemset(newg_list_size_dev, 0, graph_size * sizeof(int));
+  cudaMemset(oldg_list_size_dev, 0, graph_size * sizeof(int));
+  dim3 grid_size(graph_size);
+  dim3 block_size(32);
+  SampleKernel<<<grid_size, block_size>>>(
+      graph_new_dev, newg_list_size_dev, graph_old_dev, oldg_list_size_dev,
+      knn_graph_dev, graph_size);
+  cudaDeviceSynchronize();
+  PrepareReverseGraph<<<grid_size, block_size>>>(
+      graph_new_dev, newg_list_size_dev, graph_old_dev, oldg_list_size_dev,
+      knn_graph_dev, graph_size);
+  cudaDeviceSynchronize();
+  auto end = chrono::steady_clock::now();
+  cerr << "Prepare kernel costs: "
+       << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count() / 1e6
+       << endl;
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "Prepare kernel failed." << endl;
+    exit(-1);
+  }
+}
+
+void ToDevKNNGraph(NNDElement *dev_graph,
+                   vector<vector<NNDElement>> host_graph,
+                   const int k) {
+  NNDElement *host_graph_tmp = new NNDElement[host_graph.size() * k];
+  for (int i = 0; i < host_graph.size(); i++) {
+    memcpy(&host_graph_tmp[i * k], host_graph[i].data(),
+           (size_t)k * sizeof(NNDElement));
+  }
+  cudaMemcpy(dev_graph, host_graph_tmp,
+             (size_t)host_graph.size() * k * sizeof(NNDElement),
+             cudaMemcpyHostToDevice);
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "ToDevKNNGraph failed." << endl;
+    exit(-1);
+  }
+  delete[] host_graph_tmp;
+}
+
+void GetTestGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
+                  int *graph_new_dev, int *newg_list_size_dev,
+                  int *graph_old_dev, int *oldg_list_size_dev,
+                  const int graph_size) {
+  Graph &g_new = *graph_new_ptr;
+  g_new.clear(); g_new.resize(graph_size);
+  Graph &g_old = *graph_old_ptr;
+  g_old.clear(); g_old.resize(graph_size);
+  int *host_graph = new int[graph_size];
+  int *newg_list_size = new int[graph_size];
+  int *oldg_list_size = new int[graph_size];
+  cudaMemcpy(newg_list_size, newg_list_size_dev,
+             (size_t)graph_size * sizeof(int), cudaMemcpyDeviceToHost);
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "1. Get test graph failed." << endl;
+    exit(-1);
+  }
+  cudaMemcpy(oldg_list_size, oldg_list_size_dev,
+             (size_t)graph_size * sizeof(int), cudaMemcpyDeviceToHost); 
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "2. Get test graph failed." << endl;
+    exit(-1);
+  } 
+  int *graph_new = new int[graph_size * (SAMPLE_NUM * 2)];
+  int *graph_old = new int[graph_size * (SAMPLE_NUM * 2)];
+  cudaMemcpy(graph_new, graph_new_dev,
+             (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int),
+             cudaMemcpyDeviceToHost);
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "3. Get test graph failed." << endl;
+    exit(-1);
+  } 
+  cudaMemcpy(graph_old, graph_old_dev,
+             (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int),
+             cudaMemcpyDeviceToHost);
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "4. Get test graph failed." << endl;
+    exit(-1);
+  } 
+  for (int i = 0; i < graph_size; i++) {
+    int list_base_pos = i * (SAMPLE_NUM * 2);
+    for (int j = 0; j < newg_list_size[i]; j++) {
+      g_new[i].push_back(graph_new[list_base_pos + j]);
+    }
+  }
+  for (int i = 0; i < graph_size; i++) {
+    int list_base_pos = i * (SAMPLE_NUM * 2);
+    for (int j = 0; j < oldg_list_size[i]; j++) {
+      g_old[i].push_back(graph_old[list_base_pos + j]);
+    }
+  }
+  for (int i = 0; i < graph_size; i++) {
+    sort(g_new[i].begin(), g_new[i].end());
+    g_new[i].erase(unique(g_new[i].begin(), g_new[i].end()), g_new[i].end());
+
+    sort(g_old[i].begin(), g_old[i].end());
+    g_old[i].erase(unique(g_old[i].begin(), g_old[i].end()), g_old[i].end());
+  }
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "Get test graph failed." << endl;
+    exit(-1);
+  }
+  delete[] newg_list_size;
+  delete[] oldg_list_size;
+  delete[] graph_new;
+  delete[] graph_old;
+  delete[] host_graph;
 }
 
 __device__ __forceinline__ NNDElement
@@ -1241,6 +1487,10 @@ int GetMaxListSize(const Graph &g) {
   return res;
 }
 
+float UpdateGraph(NNDElement *origin_knn_graph_dev, float *vectors_dev,
+                  int *newg_dev, int *newg_list_size, int *oldg_dev,
+                  int *oldg_list_size, const int k) {return 0;}
+
 float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
                   float *vectors_dev, const Graph &newg, const Graph &oldg,
                   const int k) {
@@ -1360,21 +1610,52 @@ float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
   return kernel_time;
 }
 
+void OutputGraph(const xmuknn::Graph &g, const string &path) {
+  ofstream out(path);
+  for (int i = 0; i < g.size(); i++) {
+    out << g[i].size() << "\t";
+    for (int j = 0; j < g[i].size(); j++) {
+      out << g[i][j] << "\t";
+    } out << endl;
+  }
+  out.close();
+}
+
+void OutputGraph(const vector<vector<NNDElement>> &g, const string &path) {
+  ofstream out(path);
+  for (int i = 0; i < g.size(); i++) {
+    out << g[i].size() << "\t";
+    for (int j = 0; j < g[i].size(); j++) {
+      out << g[i][j].label() << "\t";
+    } out << endl;
+  }
+  out.close();
+}
+
 namespace gpuknn {
 vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
-                                  const int vecs_dim) {
+                                     const int vecs_dim) {
   int k = NEIGHB_NUM_PER_LIST;
-  int iteration = 6;
+  int iteration = 1;
   auto cuda_status = cudaSetDevice(DEVICE_ID);
 
   float *vectors_dev;
   cudaMalloc(&vectors_dev, (size_t)vecs_size * vecs_dim * sizeof(float));
   cudaMemcpy(vectors_dev, vectors, (size_t)vecs_size * vecs_dim * sizeof(float),
              cudaMemcpyHostToDevice);
+  int *graph_new_dev, *newg_list_size_dev, *graph_old_dev, *oldg_list_size_dev;
+  NNDElement *knn_graph_dev;
+  int graph_size = vecs_size;
+  cudaMalloc(&graph_new_dev, (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int));
+  cudaMalloc(&newg_list_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&graph_old_dev, (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int));
+  cudaMalloc(&oldg_list_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&knn_graph_dev, (size_t)graph_size * k * sizeof(NNDElement));
 
+  cuda_status = cudaGetLastError();
   if (cuda_status != cudaSuccess) {
     cerr << cudaGetErrorString(cuda_status) << endl;
-    cerr << "cudaSetDevice failed" << endl;
+    cerr << "Init failed" << endl;
     exit(-1);
   }
   Graph result(vecs_size);
@@ -1412,8 +1693,17 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   long long cmp_times = 0;
   for (int t = 0; t < iteration; t++) {
     cerr << "Start generating NBGraph." << endl;
+    // Should be removed after testing.
+    ToDevKNNGraph(knn_graph_dev, g, NEIGHB_NUM_PER_LIST);
     auto start = chrono::steady_clock::now();
-    GetNBGraph(&newg, &oldg, g, vectors, vecs_size, vecs_dim);
+    PrepareForUpdate(graph_new_dev, newg_list_size_dev, graph_old_dev,
+                     oldg_list_size_dev, knn_graph_dev, graph_size);
+    GetTestGraph(&newg, &oldg, graph_new_dev, newg_list_size_dev,
+                 graph_old_dev, oldg_list_size_dev, graph_size);
+    OutputGraph(newg, "/home/hwang/codes/GPU_KNNG/results/graph_a.txt");
+    OutputGraph(g, "/home/hwang/codes/GPU_KNNG/results/graph_origin.txt");
+    // GetNBGraph(&newg, &oldg, g, vectors, vecs_size, vecs_dim);
+    // OutputGraph(newg, "/home/hwang/codes/GPU_KNNG/results/graph_b.txt");
     auto end = chrono::steady_clock::now();
     float tmp_time =
         (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
@@ -1427,7 +1717,6 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
     cerr << "GetNBGraph costs " << tmp_time << endl;
 
     start = chrono::steady_clock::now();
-    vector<pair<float, int>> tmp_result;
     // long long update_times = 0;
     float tmp_kernel_costs = UpdateGraph(&g, vectors_dev, newg, oldg, k);
     kernel_costs += tmp_kernel_costs;
@@ -1453,6 +1742,13 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   cerr << "Update costs: " << iteration_costs << endl;
   cerr << "Get NB graph costs: " << get_nb_graph_time << endl;
   cerr << "All procedure costs: " << sum_costs << endl;
+
+  cudaFree(vectors_dev);
+  cudaFree(graph_new_dev);
+  cudaFree(newg_list_size_dev);
+  cudaFree(graph_old_dev);
+  cudaFree(oldg_list_size_dev);
+  cudaFree(knn_graph_dev);
   return g;
 }
 }  // namespace gpuknn
