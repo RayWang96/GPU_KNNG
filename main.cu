@@ -32,23 +32,23 @@ void TestCUDANNDescent() {
   // string out_path = FileTool::GetOutPath();
 
   // string base_path
-  //     = "/mnt/d/cache/hwang_data/data/sift10k/sift10k.txt";
+  //     = "/home/hwang//data/sift10k/sift10k.txt";
   // string out_path
   //     = "/home/hwang/data/result/sift10k_knng_k32.txt";
   // string ground_truth_path
-  //     = "/mnt/d/cache/hwang_data/data/sift10k/sift10k_groundtruth_self.txt";
+  //     = "/home/hwang//data/sift10k/sift10k_groundtruth_self.txt";
 
-  string base_path = "/mnt/d/cache/hwang_data/data/sift100k/sift100k.txt";
+  string base_path = "/home/hwang//data/sift100k/sift100k.txt";
   string out_path = "/home/hwang/data/result/sift100k_knng_k30.txt";
   string ground_truth_path =
-      "/mnt/d/cache/hwang_data/data/sift100k/sift100k_groundtruth_self.txt";
+      "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
 
   // string base_path
-  //     = "/mnt/d/cache/hwang_data/data/sift1m/sift1m.txt";
+  //     = "/home/hwang//data/sift1m/sift1m.txt";
   // string out_path
   //     = "/home/hwang/data/result/sift1m_knng_k30.txt";
   // string ground_truth_path
-  //     = "/mnt/d/cache/hwang_data/data/sift1m/sift1m_gold_knn40_sorted.txt";
+  //     = "/home/hwang//data/sift1m/sift1m_gold_knn40_sorted.txt";
 
   auto out = ofstream(out_path);
   if (!out.is_open()) {

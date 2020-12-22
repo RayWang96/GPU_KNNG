@@ -186,11 +186,9 @@ __device__ __forceinline__ int GetItNum(const int sum_num,
   return sum_num / num_per_it + (sum_num % num_per_it != 0);
 }
 
-__global__ void SampleKernel(int *graph_new_dev,
-                                       int *newg_list_size_dev,
-                                       int *graph_old_dev,
-                                       int *oldg_list_size_dev,
-                                       NNDElement *knn_graph, int graph_size) {
+__global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
+                             int *graph_old_dev, int *oldg_list_size_dev,
+                             NNDElement *knn_graph, int graph_size) {
   __shared__ int new_elements_cache[NEIGHB_NUM_PER_LIST];
   __shared__ int cache1_size;
   __shared__ int old_elements_cache[NEIGHB_NUM_PER_LIST];
@@ -240,11 +238,10 @@ __global__ void SampleKernel(int *graph_new_dev,
   __syncthreads();
 }
 
-__global__ void PrepareReverseGraph(int *graph_new_dev,
-                                       int *newg_list_size_dev,
-                                       int *graph_old_dev,
-                                       int *oldg_list_size_dev,
-                                       NNDElement *knn_graph, int graph_size) {
+__global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
+                                    int *newg_revlist_size_dev,
+                                    int *graph_old_dev, int *oldg_list_size_dev,
+                                    int *oldg_revlist_size_dev) {
   __shared__ int new_elements_cache[SAMPLE_NUM];
   __shared__ int cache1_size;
   __shared__ int old_elements_cache[SAMPLE_NUM];
@@ -258,10 +255,6 @@ __global__ void PrepareReverseGraph(int *graph_new_dev,
     cache2_size = oldg_list_size_dev[list_id];
   }
   __syncthreads();
-  if (!(cache1_size == 31 && cache2_size == 0)) {
-    printf("%d %d\n", cache1_size, cache2_size);
-    assert(false);
-  }
   int it_num = GetItNum(SAMPLE_NUM, warpSize);
   for (int i = 0; i < it_num; i++) {
     int local_pos = i * warpSize + tx;
@@ -280,39 +273,97 @@ __global__ void PrepareReverseGraph(int *graph_new_dev,
     int local_pos = i * warpSize + tx;
     if (local_pos < cache1_size) {
       int rev_list_id = new_elements_cache[local_pos];
-      int pos = atomicAdd(&newg_list_size_dev[rev_list_id], 1);
+      int pos = SAMPLE_NUM;
+      pos += atomicAdd(&newg_revlist_size_dev[rev_list_id], 1);
       // printf("%d %d %d\n", pos, rev_list_id, list_id);
       if (pos >= SAMPLE_NUM * 2)
-        atomicExch(&newg_list_size_dev[rev_list_id], SAMPLE_NUM * 2);
+        atomicExch(&newg_revlist_size_dev[rev_list_id], SAMPLE_NUM);
       else
-        graph_new_dev[pos] = list_id;
+        graph_new_dev[rev_list_id * (SAMPLE_NUM * 2) + pos] = list_id;
     }
     if (local_pos < cache2_size) {
       int rev_list_id = old_elements_cache[local_pos];
-      int pos = atomicAdd(&oldg_list_size_dev[rev_list_id], 1);
+      int pos = SAMPLE_NUM;
+      pos += atomicAdd(&oldg_revlist_size_dev[rev_list_id], 1);
       if (pos >= SAMPLE_NUM * 2)
-        atomicExch(&oldg_list_size_dev[rev_list_id], SAMPLE_NUM * 2);
+        atomicExch(&oldg_revlist_size_dev[rev_list_id], SAMPLE_NUM);
       else
-        graph_old_dev[pos] = list_id;
+        graph_old_dev[rev_list_id * (SAMPLE_NUM * 2) + pos] = list_id;
     }
   }
 }
 
+__global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
+                            int *newg_revlist_size_dev, int *graph_old_dev,
+                            int *oldg_list_size_dev,
+                            int *oldg_revlist_size_dev) {
+  __shared__ int new_rev_elements_cache[SAMPLE_NUM];
+  __shared__ int newg_list_size, newg_revlist_size;
+  __shared__ int old_rev_elements_cache[SAMPLE_NUM];
+  __shared__ int oldg_list_size, oldg_revlist_size;
+  int tx = threadIdx.x;
+  int list_id = blockIdx.x;
+  int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
+  if (tx == 0) {
+    newg_list_size = newg_list_size_dev[list_id];
+    oldg_list_size = oldg_list_size_dev[list_id];
+    newg_revlist_size = newg_revlist_size_dev[list_id];
+    oldg_revlist_size = oldg_revlist_size_dev[list_id];
+  }
+  __syncthreads();
+  int it_num = GetItNum(SAMPLE_NUM, warpSize);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * warpSize + tx;
+    if (local_pos < newg_revlist_size) {
+      new_rev_elements_cache[local_pos] = 
+        graph_new_dev[res_g_base_pos + local_pos + SAMPLE_NUM];
+    }
+    if (local_pos < oldg_revlist_size) {
+      old_rev_elements_cache[local_pos] = 
+        graph_old_dev[res_g_base_pos + local_pos + SAMPLE_NUM];
+    }
+  }
+  __syncthreads();
+  it_num = GetItNum(SAMPLE_NUM, warpSize);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * warpSize + tx;
+    if (local_pos < newg_revlist_size) {
+      graph_new_dev[res_g_base_pos + local_pos + newg_list_size] =
+        new_rev_elements_cache[local_pos];
+    }
+    if (local_pos < oldg_revlist_size) {
+      graph_old_dev[res_g_base_pos + local_pos + oldg_list_size] = 
+        old_rev_elements_cache[local_pos];
+    }
+  }
+  newg_list_size_dev[list_id] = newg_list_size + newg_revlist_size;
+  oldg_list_size_dev[list_id] = oldg_list_size + oldg_revlist_size;
+}
+
 void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
+                      int *newg_revlist_size_dev,
                       int *graph_old_dev, int *oldg_list_size_dev,
+                      int *oldg_revlist_size_dev,
                       NNDElement *knn_graph_dev, int graph_size) {
   auto start = chrono::steady_clock::now();
   cudaMemset(newg_list_size_dev, 0, graph_size * sizeof(int));
   cudaMemset(oldg_list_size_dev, 0, graph_size * sizeof(int));
+  cudaMemset(newg_revlist_size_dev, 0, graph_size * sizeof(int));
+  cudaMemset(oldg_revlist_size_dev, 0, graph_size * sizeof(int));
   dim3 grid_size(graph_size);
   dim3 block_size(32);
-  SampleKernel<<<grid_size, block_size>>>(
+  PrepareGraph<<<grid_size, block_size>>>(
       graph_new_dev, newg_list_size_dev, graph_old_dev, oldg_list_size_dev,
       knn_graph_dev, graph_size);
   cudaDeviceSynchronize();
   PrepareReverseGraph<<<grid_size, block_size>>>(
-      graph_new_dev, newg_list_size_dev, graph_old_dev, oldg_list_size_dev,
-      knn_graph_dev, graph_size);
+      graph_new_dev, newg_list_size_dev, newg_revlist_size_dev,
+      graph_old_dev, oldg_list_size_dev, oldg_revlist_size_dev);
+  cudaDeviceSynchronize();
+  ShrinkGraph<<<grid_size, block_size>>>(
+      graph_new_dev, newg_list_size_dev, newg_revlist_size_dev,
+      graph_old_dev, oldg_list_size_dev, oldg_revlist_size_dev);
   cudaDeviceSynchronize();
   auto end = chrono::steady_clock::now();
   cerr << "Prepare kernel costs: "
@@ -1636,7 +1687,7 @@ namespace gpuknn {
 vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
                                      const int vecs_dim) {
   int k = NEIGHB_NUM_PER_LIST;
-  int iteration = 1;
+  int iteration = 6;
   auto cuda_status = cudaSetDevice(DEVICE_ID);
 
   float *vectors_dev;
@@ -1644,12 +1695,15 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   cudaMemcpy(vectors_dev, vectors, (size_t)vecs_size * vecs_dim * sizeof(float),
              cudaMemcpyHostToDevice);
   int *graph_new_dev, *newg_list_size_dev, *graph_old_dev, *oldg_list_size_dev;
+  int *newg_revlist_size_dev, *oldg_revlist_size_dev;
   NNDElement *knn_graph_dev;
   int graph_size = vecs_size;
   cudaMalloc(&graph_new_dev, (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int));
   cudaMalloc(&newg_list_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&newg_revlist_size_dev, (size_t)graph_size * sizeof(int));
   cudaMalloc(&graph_old_dev, (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int));
   cudaMalloc(&oldg_list_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&oldg_revlist_size_dev, (size_t)graph_size * sizeof(int));
   cudaMalloc(&knn_graph_dev, (size_t)graph_size * k * sizeof(NNDElement));
 
   cuda_status = cudaGetLastError();
@@ -1696,8 +1750,9 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
     // Should be removed after testing.
     ToDevKNNGraph(knn_graph_dev, g, NEIGHB_NUM_PER_LIST);
     auto start = chrono::steady_clock::now();
-    PrepareForUpdate(graph_new_dev, newg_list_size_dev, graph_old_dev,
-                     oldg_list_size_dev, knn_graph_dev, graph_size);
+    PrepareForUpdate(graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, 
+                     graph_old_dev, oldg_list_size_dev, oldg_revlist_size_dev,
+                     knn_graph_dev, graph_size);
     GetTestGraph(&newg, &oldg, graph_new_dev, newg_list_size_dev,
                  graph_old_dev, oldg_list_size_dev, graph_size);
     OutputGraph(newg, "/home/hwang/codes/GPU_KNNG/results/graph_a.txt");
@@ -1749,6 +1804,8 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   cudaFree(graph_old_dev);
   cudaFree(oldg_list_size_dev);
   cudaFree(knn_graph_dev);
+  cudaFree(newg_revlist_size_dev);
+  cudaFree(oldg_revlist_size_dev);
   return g;
 }
 }  // namespace gpuknn
