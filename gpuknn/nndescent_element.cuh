@@ -20,14 +20,14 @@ struct NNDElement {
   __host__ __device__ void SetLabel(const int new_label) {
     this->label_ = new_label;
   }
-  __host__ __device__ void SetDistance(const int new_distance) {
+  __host__ __device__ void SetDistance(const float new_distance) {
     this->distance_ = new_distance;
   }
   __host__ __device__ int label() const {
     if (this->IsNew()) return label_;
     return -label_ - 1;
   }
-  __host__ __device__ int distance() const {
+  __host__ __device__ float distance() const {
     return distance_;
   }
   __host__ __device__ void MarkOld() { 

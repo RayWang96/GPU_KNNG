@@ -13,6 +13,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
 
 #include "../tools/distfunc.hpp"
 #include "../xmuknn.h"
@@ -30,8 +32,8 @@ using namespace xmuknn;
 #define DEVICE_ID 0
 #define LARGE_INT 0x3f3f3f3f
 #define FULL_MASK 0xffffffff
-#define DONT_TILE 0
-#define INSERT_MIN_ONLY 1
+// #define DONT_TILE 0
+// #define INSERT_MIN_ONLY 1
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 64;
 const int INSERT_IT_NUM =
@@ -238,6 +240,28 @@ __global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
   __syncthreads();
 }
 
+__device__ void Swap(int &a, int &b) {
+  int c = a;
+  a = b;
+  b = c;
+}
+
+__device__ void InsertSort(int *a, const int length) {
+  for (int i = 1; i < length; i++) {
+    for (int j = i - 1; j >= 0 && a[j + 1] < a[j]; j--) {
+      Swap(a[j], a[j + 1]);
+    }
+  }
+}
+
+__device__ int RemoveDuplicates(int *nums, int nums_size) {
+  if (nums_size < 2) return nums_size;
+  int a = 0, b = 1;
+  while (b < nums_size)
+    if (nums[b++] > nums[a]) nums[++a] = nums[b - 1];
+  return (a + 1);
+}
+
 __global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
                                     int *newg_revlist_size_dev,
                                     int *graph_old_dev, int *oldg_list_size_dev,
@@ -297,13 +321,12 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
                             int *newg_revlist_size_dev, int *graph_old_dev,
                             int *oldg_list_size_dev,
                             int *oldg_revlist_size_dev) {
-  __shared__ int new_rev_elements_cache[SAMPLE_NUM];
+  __shared__ int new_elements_cache[SAMPLE_NUM * 2];
   __shared__ int newg_list_size, newg_revlist_size;
-  __shared__ int old_rev_elements_cache[SAMPLE_NUM];
+  __shared__ int old_elements_cache[SAMPLE_NUM * 2];
   __shared__ int oldg_list_size, oldg_revlist_size;
   int tx = threadIdx.x;
   int list_id = blockIdx.x;
-  int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
   int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
   if (tx == 0) {
     newg_list_size = newg_list_size_dev[list_id];
@@ -312,33 +335,73 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     oldg_revlist_size = oldg_revlist_size_dev[list_id];
   }
   __syncthreads();
-  int it_num = GetItNum(SAMPLE_NUM, warpSize);
+  int it_num = GetItNum(SAMPLE_NUM * 2, warpSize);
   for (int i = 0; i < it_num; i++) {
     int local_pos = i * warpSize + tx;
-    if (local_pos < newg_revlist_size) {
-      new_rev_elements_cache[local_pos] = 
-        graph_new_dev[res_g_base_pos + local_pos + SAMPLE_NUM];
+    if (local_pos < SAMPLE_NUM * 2) {
+      new_elements_cache[local_pos] = 
+        graph_new_dev[res_g_base_pos + local_pos];
     }
-    if (local_pos < oldg_revlist_size) {
-      old_rev_elements_cache[local_pos] = 
-        graph_old_dev[res_g_base_pos + local_pos + SAMPLE_NUM];
+    if (local_pos < SAMPLE_NUM * 2) {
+      old_elements_cache[local_pos] = 
+        graph_old_dev[res_g_base_pos + local_pos];
     }
+  }
+  __syncthreads();  
+
+  if (tx == 0) {
+    for (int i = newg_list_size; i < SAMPLE_NUM; i++) {
+      new_elements_cache[i] = LARGE_INT;
+    }
+    for (int i = oldg_list_size; i < SAMPLE_NUM; i++) {
+      old_elements_cache[i] = LARGE_INT;
+    }
+    for (int i = SAMPLE_NUM + newg_revlist_size; i < SAMPLE_NUM * 2; i++) {
+      new_elements_cache[i] = LARGE_INT;
+    }
+    for (int i = SAMPLE_NUM + oldg_revlist_size; i < SAMPLE_NUM * 2; i++) {
+      old_elements_cache[i] = LARGE_INT;
+    }
+    // Dont need LARGE_INT
+    InsertSort(new_elements_cache, SAMPLE_NUM * 2);
+    InsertSort(old_elements_cache, SAMPLE_NUM * 2);
+    newg_list_size = RemoveDuplicates(new_elements_cache, SAMPLE_NUM * 2);
+    newg_list_size -= (new_elements_cache[newg_list_size - 1] == LARGE_INT);
+    oldg_list_size = RemoveDuplicates(old_elements_cache, SAMPLE_NUM * 2);
+    oldg_list_size -= (old_elements_cache[oldg_list_size - 1] == LARGE_INT);
+    for (int i = 0; i < newg_list_size; i++) {
+      for (int j = 0; j < oldg_list_size; j++) {
+        if (new_elements_cache[i] == old_elements_cache[j]) {
+          new_elements_cache[i] = -1;
+          break;
+        }
+      }
+    }
+    int pos = 0;
+    for (int i = 0; i < newg_list_size; i++) {
+      if (new_elements_cache[i] != -1) {
+        new_elements_cache[pos++] = new_elements_cache[i];
+      }
+    }
+    newg_list_size = pos;
+    // Really slow!!! But easy.
   }
   __syncthreads();
-  it_num = GetItNum(SAMPLE_NUM, warpSize);
+  it_num = GetItNum(SAMPLE_NUM * 2, warpSize);
   for (int i = 0; i < it_num; i++) {
     int local_pos = i * warpSize + tx;
-    if (local_pos < newg_revlist_size) {
-      graph_new_dev[res_g_base_pos + local_pos + newg_list_size] =
-        new_rev_elements_cache[local_pos];
+    if (local_pos < newg_list_size) {
+      graph_new_dev[res_g_base_pos + local_pos] =
+        new_elements_cache[local_pos];
     }
-    if (local_pos < oldg_revlist_size) {
-      graph_old_dev[res_g_base_pos + local_pos + oldg_list_size] = 
-        old_rev_elements_cache[local_pos];
+    if (local_pos < oldg_list_size) {
+      graph_old_dev[res_g_base_pos + local_pos] = 
+        old_elements_cache[local_pos];
     }
   }
-  newg_list_size_dev[list_id] = newg_list_size + newg_revlist_size;
-  oldg_list_size_dev[list_id] = oldg_list_size + oldg_revlist_size;
+
+  newg_list_size_dev[list_id] = newg_list_size;
+  oldg_list_size_dev[list_id] = oldg_list_size;
 }
 
 void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
@@ -457,13 +520,13 @@ void GetTestGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
       g_old[i].push_back(graph_old[list_base_pos + j]);
     }
   }
-  for (int i = 0; i < graph_size; i++) {
-    sort(g_new[i].begin(), g_new[i].end());
-    g_new[i].erase(unique(g_new[i].begin(), g_new[i].end()), g_new[i].end());
+  // for (int i = 0; i < graph_size; i++) {
+  //   sort(g_new[i].begin(), g_new[i].end());
+  //   g_new[i].erase(unique(g_new[i].begin(), g_new[i].end()), g_new[i].end());
 
-    sort(g_old[i].begin(), g_old[i].end());
-    g_old[i].erase(unique(g_old[i].begin(), g_old[i].end()), g_old[i].end());
-  }
+  //   sort(g_old[i].begin(), g_old[i].end());
+  //   g_old[i].erase(unique(g_old[i].begin(), g_old[i].end()), g_old[i].end());
+  // }
   cuda_status = cudaGetLastError();
   if (cuda_status != cudaSuccess) {
     cerr << cudaGetErrorString(cuda_status) << endl;
@@ -617,331 +680,6 @@ __device__ uint GetNthSetBitPos(uint mask, int nth) {
   return res;
 }
 
-#if !INSERT_MIN_ONLY
-__device__ __forceinline__ NNDElement XorSwap(NNDElement x, int mask, int dir) {
-  NNDElement y;
-  y.distance = __shfl_xor_sync(0xffffffff, x.distance, mask, warpSize);
-  y.label = __shfl_xor_sync(0xffffffff, x.label, mask, warpSize);
-  return x < y == dir ? y : x;
-}
-
-__device__ __forceinline__ uint Bfe(uint lane_id, uint pos) {
-  uint res;
-  asm("bfe.u32 %0,%1,%2,%3;" : "=r"(res) : "r"(lane_id), "r"(pos), "r"(1));
-  return res;
-}
-
-__device__ __forceinline__ void BitonicSort(NNDElement *sort_element_ptr,
-                                            const int lane_id) {
-  auto &sort_elem = *sort_element_ptr;
-  sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 1) ^ Bfe(lane_id, 0));
-  sort_elem = XorSwap(sort_elem, 0x02, Bfe(lane_id, 2) ^ Bfe(lane_id, 1));
-  sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 2) ^ Bfe(lane_id, 0));
-  sort_elem = XorSwap(sort_elem, 0x04, Bfe(lane_id, 3) ^ Bfe(lane_id, 2));
-  sort_elem = XorSwap(sort_elem, 0x02, Bfe(lane_id, 3) ^ Bfe(lane_id, 1));
-  sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 3) ^ Bfe(lane_id, 0));
-  sort_elem = XorSwap(sort_elem, 0x08, Bfe(lane_id, 4) ^ Bfe(lane_id, 3));
-  sort_elem = XorSwap(sort_elem, 0x04, Bfe(lane_id, 4) ^ Bfe(lane_id, 2));
-  sort_elem = XorSwap(sort_elem, 0x02, Bfe(lane_id, 4) ^ Bfe(lane_id, 1));
-  sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 4) ^ Bfe(lane_id, 0));
-  sort_elem = XorSwap(sort_elem, 0x10, Bfe(lane_id, 4));
-  sort_elem = XorSwap(sort_elem, 0x08, Bfe(lane_id, 3));
-  sort_elem = XorSwap(sort_elem, 0x04, Bfe(lane_id, 2));
-  sort_elem = XorSwap(sort_elem, 0x02, Bfe(lane_id, 1));
-  sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 0));
-  return;
-}
-
-__device__ void UpdateLocalKNNLists(NNDElement *knn_list, const int *neighbs_id,
-                                    const int list_id, const int list_size,
-                                    const float *distances,
-                                    const int distances_num) {
-  int head_pos = list_id * (list_id - 1) / 2;
-  int tail_pos = (list_id + 1) * list_id / 2;
-  int y_num = tail_pos - head_pos;
-
-  int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
-  int pos_in_lists = list_id * NEIGHB_CACHE_NUM;
-
-  int it_num = GetItNum(y_num, warpSize);
-  for (int it = 0; it < it_num; it++) {
-    // bitonic sort
-    NNDElement sort_elem;
-    sort_elem.label = neighbs_id[it * warpSize + lane_id];
-    int current_pos = head_pos + it * warpSize + lane_id;
-    if (current_pos < tail_pos) {
-      sort_elem.distance = distances[current_pos];
-    } else {
-      sort_elem.distance = 1e10;
-      sort_elem.label = LARGE_INT;
-    }
-    // printf("%d %f %d\n", lane_id, sort_elem.distance, sort_elem.label);
-    BitonicSort(&sort_elem, lane_id);
-    int offset;
-    for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
-      int flag = 1;
-      if (lane_id == warpSize - 1) {
-        if (sort_elem < knn_list[pos_in_lists + offset]) {
-          flag = 0;
-        }
-      }
-      flag = __shfl_sync(0xffffffff, flag, warpSize - 1, warpSize);
-      if (!flag) break;
-      NNDElement tmp;
-      tmp.distance =
-          __shfl_up_sync(0xffffffff, sort_elem.distance, 1, warpSize);
-      tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 1, warpSize);
-      sort_elem = tmp;
-    }
-    if (lane_id < offset) {
-      if (lane_id < NEIGHB_CACHE_NUM) {
-        sort_elem = knn_list[pos_in_lists + lane_id];
-      } else {
-        sort_elem = NNDElement(1e10, LARGE_INT);
-      }
-    }
-    BitonicSort(&sort_elem, lane_id);
-    if (lane_id < NEIGHB_CACHE_NUM)
-      knn_list[pos_in_lists + lane_id] = sort_elem;
-  }
-
-  head_pos = list_id * (list_id + 3) / 2;  // 0   2   5   9   14
-  for (int it = 0; it < 2; it++) {
-    NNDElement sort_elem;
-    int no = it * warpSize + lane_id;
-    sort_elem.label = neighbs_id[no + list_id + 1];
-    int current_pos = head_pos + no * (no + list_id * 2 + 1) / 2;
-    if (current_pos < distances_num) {
-      sort_elem.distance = distances[current_pos];
-    } else {
-      sort_elem.distance = 1e10;
-      sort_elem.label = LARGE_INT;
-    }
-    BitonicSort(&sort_elem, lane_id);
-    int offset;
-    for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
-      int flag = 1;
-      if (lane_id == warpSize - 1) {
-        if (sort_elem < knn_list[pos_in_lists + offset]) {
-          flag = 0;
-        }
-      }
-      flag = __shfl_sync(0xffffffff, flag, warpSize - 1, warpSize);
-      if (!flag) break;
-      NNDElement tmp;
-      tmp.distance =
-          __shfl_up_sync(0xffffffff, sort_elem.distance, 1, warpSize);
-      tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 1, warpSize);
-      sort_elem = tmp;
-    }
-    if (lane_id < offset) {
-      if (lane_id < NEIGHB_CACHE_NUM) {
-        sort_elem = knn_list[pos_in_lists + lane_id];
-      } else {
-        sort_elem = NNDElement(1e10, LARGE_INT);
-      }
-    }
-    BitonicSort(&sort_elem, lane_id);
-    if (lane_id < NEIGHB_CACHE_NUM)
-      knn_list[pos_in_lists + lane_id] = sort_elem;
-  }
-
-  // printf("%d %f %d\n", lane_id, knn_list[pos_in_lists + lane_id].distance,
-  // knn_list[pos_in_lists + lane_id].label);
-}
-
-__device__ void UpdateLocalNewKNNLists(NNDElement *knn_list, const int list_id,
-                                       const int list_size,
-                                       const int *old_neighbs,
-                                       const int num_old,
-                                       const float *distances,
-                                       const int distances_num) {
-  int head_pos = list_id * num_old;
-  int y_num = num_old;
-  int tail_pos = head_pos + num_old;
-
-  int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
-  int pos_in_lists = list_id * NEIGHB_CACHE_NUM;
-
-  int it_num = GetItNum(y_num, warpSize);
-  for (int it = 0; it < it_num; it++) {
-    // bitonic sort
-    NNDElement sort_elem;
-    int no = it * warpSize + lane_id;
-    sort_elem.label = old_neighbs[no];
-    int current_pos = head_pos + no;
-    if (current_pos < tail_pos) {
-      sort_elem.distance = distances[current_pos];
-    } else {
-      sort_elem.distance = 1e10;
-      sort_elem.label = LARGE_INT;
-    }
-    // printf("%d %f %d\n", lane_id, sort_elem.distance, sort_elem.label);
-    BitonicSort(&sort_elem, lane_id);
-    int offset;
-    for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
-      int flag = 1;
-      if (lane_id == warpSize - 1) {
-        if (sort_elem < knn_list[pos_in_lists + offset]) {
-          flag = 0;
-        }
-      }
-      flag = __shfl_sync(0xffffffff, flag, warpSize - 1, warpSize);
-      if (!flag) break;
-      NNDElement tmp;
-      tmp.distance =
-          __shfl_up_sync(0xffffffff, sort_elem.distance, 1, warpSize);
-      tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 1, warpSize);
-      sort_elem = tmp;
-    }
-    if (lane_id < offset) {
-      if (lane_id < NEIGHB_CACHE_NUM) {
-        sort_elem = knn_list[pos_in_lists + lane_id];
-      } else {
-        sort_elem = NNDElement(1e10, LARGE_INT);
-      }
-    }
-    BitonicSort(&sort_elem, lane_id);
-    if (lane_id < NEIGHB_CACHE_NUM)
-      knn_list[pos_in_lists + lane_id] = sort_elem;
-  }
-}
-
-__device__ void UpdateLocalOldKNNLists(
-    NNDElement *knn_list, const int list_id, const int list_size,
-    const int *new_neighbs, const int num_new, const int *old_neighbs,
-    const int num_old, const float *distances, const int distances_num,
-    const float *vectors) {
-  int head_pos = list_id - num_new;
-  int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
-  int pos_in_lists = list_id * NEIGHB_CACHE_NUM;
-
-  int it_num = GetItNum(num_new, warpSize);
-  for (int it = 0; it < it_num; it++) {
-    NNDElement sort_elem;
-    int no = it * warpSize + lane_id;
-    sort_elem.label = new_neighbs[no];
-    int current_pos = head_pos + no * num_old;
-    if (current_pos < distances_num) {
-      sort_elem.distance = distances[current_pos];
-    } else {
-      sort_elem.distance = 1e10;
-      sort_elem.label = LARGE_INT;
-    }
-    BitonicSort(&sort_elem, lane_id);
-    int offset;
-    for (offset = 0; offset < NEIGHB_CACHE_NUM; offset++) {
-      int flag = 1;
-      if (lane_id == warpSize - 1) {
-        if (sort_elem < knn_list[pos_in_lists + offset]) {
-          flag = 0;
-        }
-      }
-      flag = __shfl_sync(0xffffffff, flag, warpSize - 1, warpSize);
-      if (!flag) break;
-      NNDElement tmp;
-      tmp.distance =
-          __shfl_up_sync(0xffffffff, sort_elem.distance, 1, warpSize);
-      tmp.label = __shfl_up_sync(0xffffffff, sort_elem.label, 1, warpSize);
-      sort_elem = tmp;
-    }
-    if (lane_id < offset) {
-      if (lane_id < NEIGHB_CACHE_NUM) {
-        sort_elem = knn_list[pos_in_lists + lane_id];
-      } else {
-        sort_elem = NNDElement(1e10, LARGE_INT);
-      }
-    }
-    BitonicSort(&sort_elem, lane_id);
-    if (lane_id < NEIGHB_CACHE_NUM)
-      knn_list[pos_in_lists + lane_id] = sort_elem;
-  }
-}
-#endif
-
-__device__ void UniqueMergeSequential(const NNDElement *A, const int m,
-                                      const NNDElement *B, const int n,
-                                      NNDElement *C, const int k) {
-  int i = 0, j = 0, cnt = 0;
-  while ((i < m) && (j < n)) {
-    if (A[i] <= B[j]) {
-      C[cnt++] = A[i++];
-      if (cnt >= k) goto EXIT;
-      while (i < m && A[i] <= C[cnt - 1]) i++;
-      while (j < n && B[j] <= C[cnt - 1]) j++;
-    } else {
-      C[cnt++] = B[j++];
-      if (cnt >= k) goto EXIT;
-      while (i < m && A[i] <= C[cnt - 1]) i++;
-      while (j < n && B[j] <= C[cnt - 1]) j++;
-    }
-  }
-
-  if (i == m) {
-    for (; j < n; j++) {
-      if (B[j] > C[cnt - 1]) {
-        C[cnt++] = B[j];
-      }
-      if (cnt >= k) goto EXIT;
-    }
-    for (; i < m; i++) {
-      if (A[i] > C[cnt - 1]) {
-        C[cnt++] = A[i];
-      }
-      if (cnt >= k) goto EXIT;
-    }
-  } else {
-    for (; i < m; i++) {
-      if (A[i] > C[cnt - 1]) {
-        C[cnt++] = A[i];
-      }
-      if (cnt >= k) goto EXIT;
-    }
-    for (; j < n; j++) {
-      if (B[j] > C[cnt - 1]) {
-        C[cnt++] = B[j];
-      }
-      if (cnt >= k) goto EXIT;
-    }
-  }
-
-EXIT:
-  return;
-}
-
-__device__ void MergeLocalGraphWithGlobalGraph(
-    const NNDElement *local_knn_graph, const int list_size,
-    const int *neighb_ids, const int neighb_num, NNDElement *global_knn_graph,
-    int *global_locks) {
-  int tx = threadIdx.x;
-  if (tx < neighb_num) {
-    NNDElement C_cache[NEIGHB_NUM_PER_LIST];
-    int neighb_id = neighb_ids[tx];
-    bool loop_flag = false;
-    do {
-      if (loop_flag = atomicCAS(&global_locks[neighb_id], 0, 1) == 0) {
-        if (local_knn_graph[tx * NEIGHB_CACHE_NUM].label() != LARGE_INT) {
-          UniqueMergeSequential(
-              &local_knn_graph[tx * NEIGHB_CACHE_NUM], NEIGHB_CACHE_NUM,
-              &global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST],
-              NEIGHB_NUM_PER_LIST, C_cache, NEIGHB_NUM_PER_LIST);
-          for (int i = 0; i < NEIGHB_NUM_PER_LIST; i++) {
-            global_knn_graph[neighb_id * NEIGHB_NUM_PER_LIST + i] = C_cache[i];
-          }
-        }
-      }
-      __threadfence();
-      if (loop_flag) {
-        atomicExch(&global_locks[neighb_id], 0);
-      }
-      __nanosleep(32);
-    } while (!loop_flag);
-  }
-}
-
 __device__ void InsertToGlobalGraph(NNDElement elem, const int local_id,
                                     const int global_id,
                                     NNDElement *global_knn_graph,
@@ -980,7 +718,7 @@ __device__ void InsertToGlobalGraph(NNDElement elem, const int local_id,
       int pos_to_insert = -1;
       for (int i = 0; i < INSERT_IT_NUM; i++) {
         NNDElement prev_elem = __shfl_up_sync(FULL_MASK, knn_list_frag[i], 1);
-        if (lane_id == 0) prev_elem = NNDElement(-1e10, -1);
+        if (lane_id == 0) prev_elem = NNDElement(-1e10, -LARGE_INT);
         if (elem > prev_elem && elem < knn_list_frag[i])
           pos_to_insert = i * warpSize + lane_id;
         else if (elem == prev_elem || elem == knn_list_frag[i])
@@ -1088,12 +826,12 @@ __device__ void InsertToGlobalGraph(NNDElement elem, const int local_id,
 
 __global__ void NewNeighborsCompareKernel(
     NNDElement *knn_graph, int *global_locks, const float *vectors,
-    const int *edges_new, const int *dest_new, const int num_new_max) {
+    const int *graph_new, const int *size_new, const int num_new_max) {
   extern __shared__ char buffer[];
 
   __shared__ float *shared_vectors, *distances;
   __shared__ int *neighbors;
-  __shared__ int pos_gnew, num_new;
+  __shared__ int gnew_base_pos, num_new;
 
   int tx = threadIdx.x;
   if (tx == 0) {
@@ -1109,15 +847,14 @@ __global__ void NewNeighborsCompareKernel(
   int block_dim_x = blockDim.x;
 
   if (tx == 0) {
-    int next_pos = edges_new[list_id + 1];
-    int now_pos = edges_new[list_id];
-    num_new = next_pos - now_pos;
-    pos_gnew = now_pos;
+    gnew_base_pos = list_id * (SAMPLE_NUM * 2);
+  } else if (tx == 32) {
+    num_new = size_new[list_id];
   }
   __syncthreads();
   int neighb_num = num_new;
   if (tx < neighb_num) {
-    neighbors[tx] = dest_new[pos_gnew + tx];
+    neighbors[tx] = graph_new[gnew_base_pos + tx];
   }
   __syncthreads();
   int num_vec_per_it = block_dim_x / VEC_DIM;
@@ -1154,136 +891,16 @@ __global__ void NewNeighborsCompareKernel(
   __syncthreads();
   // num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
 
-#if !INSERT_MIN_ONLY
-  int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
-  for (int j = 0; j < num_it2; j++) {
-    int pos = j * block_dim_x + tx;
-    if (pos < neighb_num * NEIGHB_CACHE_NUM)
-      knn_graph_cache[pos] = NNDElement(1e10, LARGE_INT);
-  }
-#endif
   int list_size = NEIGHB_CACHE_NUM;
   int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
   for (int j = 0; j < num_it3; j++) {
     int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
     if (list_id >= neighb_num) continue;
-#if INSERT_MIN_ONLY
     NNDElement min_elem =
         GetMinElement(neighbors, list_id, list_size, distances, calc_num);
     InsertToGlobalGraph(min_elem, list_id, neighbors[list_id], knn_graph,
                         global_locks);
-#else
-    UpdateLocalKNNLists(knn_graph_cache, neighbors, list_id, list_size,
-                        distances, calc_num);
-#endif
   }
-}
-
-__global__ void NewOldNeighborsCompareKernel(
-    NNDElement *knn_graph, int *global_locks, const float *vectors,
-    const int *edges_new, const int *dest_new, const int num_new_max,
-    const int *edges_old, const int *dest_old, const int num_old_max) {
-  extern __shared__ char buffer[];
-
-  __shared__ float *shared_vectors, *distances;
-  __shared__ int *neighbors;
-  __shared__ NNDElement *knn_graph_cache;
-
-  __shared__ int pos_gnew, pos_gold, num_new, num_old;
-
-  int neighb_num_max = num_new_max + num_old_max;
-  int tx = threadIdx.x;
-  if (tx == 0) {
-    shared_vectors = (float *)buffer;
-    knn_graph_cache = (NNDElement *)buffer;
-    size_t offset = max(neighb_num_max * SKEW_DIM * sizeof(float),
-                        neighb_num_max * NEIGHB_CACHE_NUM * sizeof(NNDElement));
-    distances = (float *)((char *)buffer + offset);
-    neighbors = (int *)((char *)distances +
-                        (num_new_max * num_old_max) * sizeof(float));
-  }
-  __syncthreads();
-
-  int list_id = blockIdx.x;
-  int block_dim_x = blockDim.x;
-
-  if (tx == 0) {
-    int next_pos = edges_new[list_id + 1];
-    int now_pos = edges_new[list_id];
-    num_new = next_pos - now_pos;
-    pos_gnew = now_pos;
-  } else if (tx == 32) {
-    int next_pos = edges_old[list_id + 1];
-    int now_pos = edges_old[list_id];
-    num_old = next_pos - now_pos;
-    pos_gold = now_pos;
-  }
-  __syncthreads();
-  int neighb_num = num_new + num_old;
-  if (tx < num_new) {
-    neighbors[tx] = dest_new[pos_gnew + tx];
-  } else if (tx >= num_new && tx < neighb_num) {
-    neighbors[tx] = dest_old[pos_gold + tx - num_new];
-  }
-  __syncthreads();
-
-  int num_vec_per_it = block_dim_x / VEC_DIM;
-  int num_it = GetItNum(neighb_num, num_vec_per_it);
-  for (int i = 0; i < num_it; i++) {
-    int row = i * num_vec_per_it + tx / VEC_DIM;
-    if (row >= neighb_num) continue;
-    int col = tx % VEC_DIM;
-    int vec_id = neighbors[row];
-    shared_vectors[row * SKEW_DIM + col] = vectors[vec_id * VEC_DIM + col];
-  }
-  __syncthreads();
-
-  int calc_num = num_new * num_old;
-  num_it = GetItNum(calc_num, block_dim_x);
-  for (int i = 0; i < num_it; i++) {
-    int idx = i * block_dim_x + tx;
-    if (idx >= calc_num) continue;
-    int x = idx / num_old;
-    int y = idx % num_old + num_new;
-    float sum = 0;
-    int base_x = x * SKEW_DIM;
-    int base_y = y * SKEW_DIM;
-    for (int j = 0; j < VEC_DIM; j++) {
-      float diff = shared_vectors[base_x + j] - shared_vectors[base_y + j];
-      sum += diff * diff;
-    }
-    distances[idx] = sum;
-  }
-  __syncthreads();
-
-  // Read list to cache
-  int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
-  for (int j = 0; j < num_it2; j++) {
-    int pos = j * block_dim_x + tx;
-    if (pos < neighb_num * NEIGHB_CACHE_NUM)
-      knn_graph_cache[pos] = NNDElement(1e10, LARGE_INT);
-  }
-  int list_size = NEIGHB_CACHE_NUM;
-  int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
-  for (int j = 0; j < num_it3; j++) {
-    int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
-    if (list_id >= neighb_num) continue;
-#if INSERT_MIN_ONLY
-#else
-    if (list_id < num_new) {
-      UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size,
-                             neighbors + num_new, num_old, distances, calc_num);
-    } else {
-      UpdateLocalOldKNNLists(knn_graph_cache, list_id, list_size, neighbors,
-                             num_new, neighbors + num_new, num_old, distances,
-                             calc_num, vectors);
-    }
-#endif
-  }
-  __syncthreads();
-  MergeLocalGraphWithGlobalGraph(knn_graph_cache, list_size, neighbors,
-                                 neighb_num, knn_graph, global_locks);
-  __syncthreads();
 }
 
 // blockDim.x = TILE_WIDTH * TILE_WIDTH;
@@ -1345,14 +962,14 @@ __device__ void GetNewOldDistancesTiled(float *distances, const float *vectors,
 
 __global__ void TiledNewOldNeighborsCompareKernel(
     NNDElement *knn_graph, int *global_locks, const float *vectors,
-    const int *edges_new, const int *dest_new, const int num_new_max,
-    const int *edges_old, const int *dest_old, const int num_old_max) {
+    const int *graph_new, const int *size_new, const int num_new_max,
+    const int *graph_old, const int *size_old, const int num_old_max) {
   extern __shared__ char buffer[];
 
   __shared__ float *distances;
   __shared__ int *neighbors;
 
-  __shared__ int pos_gnew, pos_gold, num_new, num_old;
+  __shared__ int gnew_base_pos, gold_base_pos, num_new, num_old;
 
   int tx = threadIdx.x;
   if (tx == 0) {
@@ -1366,22 +983,18 @@ __global__ void TiledNewOldNeighborsCompareKernel(
   int block_dim_x = blockDim.x;
 
   if (tx == 0) {
-    int next_pos = edges_new[list_id + 1];
-    int now_pos = edges_new[list_id];
-    num_new = next_pos - now_pos;
-    pos_gnew = now_pos;
+    gnew_base_pos = list_id * (SAMPLE_NUM * 2);
+    gold_base_pos = list_id * (SAMPLE_NUM * 2);
   } else if (tx == 32) {
-    int next_pos = edges_old[list_id + 1];
-    int now_pos = edges_old[list_id];
-    num_old = next_pos - now_pos;
-    pos_gold = now_pos;
+    num_new = size_new[list_id];
+    num_old = size_old[list_id];
   }
   __syncthreads();
   int neighb_num = num_new + num_old;
   if (tx < num_new) {
-    neighbors[tx] = dest_new[pos_gnew + tx];
+    neighbors[tx] = graph_new[gnew_base_pos + tx];
   } else if (tx >= num_new && tx < neighb_num) {
-    neighbors[tx] = dest_old[pos_gold + tx - num_new];
+    neighbors[tx] = graph_old[gnew_base_pos + tx - num_new];
   }
   __syncthreads();
 
@@ -1393,20 +1006,11 @@ __global__ void TiledNewOldNeighborsCompareKernel(
 // int num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
 
 // Read list to cache
-#if !INSERT_MIN_ONLY
-  int num_it2 = GetItNum(neighb_num * NEIGHB_CACHE_NUM, block_dim_x);
-  for (int j = 0; j < num_it2; j++) {
-    int pos = j * block_dim_x + tx;
-    if (pos < neighb_num * NEIGHB_CACHE_NUM)
-      knn_graph_cache[pos] = NNDElement(1e10, LARGE_INT);
-  }
-#endif
   int list_size = NEIGHB_CACHE_NUM;
   int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
   for (int j = 0; j < num_it3; j++) {
     int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
     if (list_id >= neighb_num) continue;
-#if INSERT_MIN_ONLY
     NNDElement min_elem(1e10, LARGE_INT);
     if (list_id < num_new) {
       min_elem =
@@ -1420,18 +1024,15 @@ __global__ void TiledNewOldNeighborsCompareKernel(
     }
     InsertToGlobalGraph(min_elem, list_id, neighbors[list_id], knn_graph,
                         global_locks);
-#else
-    if (list_id < num_new) {
-      UpdateLocalNewKNNLists(knn_graph_cache, list_id, list_size,
-                             neighbors + num_new, num_old, distances, calc_num);
-    } else {
-      UpdateLocalOldKNNLists(knn_graph_cache, list_id, list_size, neighbors,
-                             num_new, neighbors + num_new, num_old, distances,
-                             calc_num, vectors);
-    }
-#endif
   }
   __syncthreads();
+}
+
+__global__ void MarkAllToOld(NNDElement *knn_graph) {
+  int list_id = blockIdx.x;
+  int tx = threadIdx.x;
+  int graph_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  knn_graph[graph_base_pos + tx].MarkOld();
 }
 
 pair<int *, int *> ReadGraphToGlobalMemory(const Graph &graph) {
@@ -1508,9 +1109,12 @@ NNDElement *ReadKNNGraphToGlobalMemory(
   return knn_graph_dev;
 }
 
-void ToHostGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
-                 const NNDElement *knn_graph, const int size,
-                 const int neighb_num) {
+void ToHostKNNGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
+                    const NNDElement *knn_graph_dev, const int size,
+                    const int neighb_num) {
+  NNDElement *knn_graph = new NNDElement[size * neighb_num];
+  cudaMemcpy(knn_graph, knn_graph_dev, (size_t)size * neighb_num * sizeof(NNDElement),
+             cudaMemcpyDeviceToHost);
   auto &origin_knn_graph = *origin_knn_graph_ptr;
   vector<NNDElement> neighb_list;
   for (int i = 0; i < size; i++) {
@@ -1518,16 +1122,9 @@ void ToHostGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
     for (int j = 0; j < neighb_num; j++) {
       neighb_list.push_back(knn_graph[i * neighb_num + j]);
     }
-    for (int j = 0; j < neighb_num; j++) {
-      for (int k = 0; k < neighb_num; k++) {
-        if (neighb_list[j] == origin_knn_graph[i][k]) {
-          neighb_list[j].MarkOld();
-          break;
-        }
-      }
-    }
     origin_knn_graph[i] = neighb_list;
   }
+  delete[] knn_graph;
 }
 
 int GetMaxListSize(const Graph &g) {
@@ -1538,33 +1135,20 @@ int GetMaxListSize(const Graph &g) {
   return res;
 }
 
-float UpdateGraph(NNDElement *origin_knn_graph_dev, float *vectors_dev,
-                  int *newg_dev, int *newg_list_size, int *oldg_dev,
-                  int *oldg_list_size, const int k) {return 0;}
+int GetMaxListSize(int *list_size_dev, const int g_size) {
+  thrust::device_ptr<int> dev_ptr = thrust::device_pointer_cast(list_size_dev);
+  return *thrust::max_element(dev_ptr, dev_ptr + g_size);
+}
 
-float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
-                  float *vectors_dev, const Graph &newg, const Graph &oldg,
-                  const int k) {
+float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
+                  float *vectors_dev, int *newg_dev, int *newg_list_size_dev,
+                  int *oldg_dev, int *oldg_list_size_dev, const int k) {
   float kernel_time = 0;
-  auto &origin_knn_graph = *origin_knn_graph_ptr;
-
-  int *edges_dev_new, *dest_dev_new;
-  tie(edges_dev_new, dest_dev_new) = ReadGraphToGlobalMemory(newg);
-
-  int *edges_dev_old, *dest_dev_old;
-  tie(edges_dev_old, dest_dev_old) = ReadGraphToGlobalMemory(oldg);
-
-  size_t g_size = newg.size();
-
   cudaError_t cuda_status;
-  NNDElement *knn_graph_dev, *knn_graph = new NNDElement[g_size * k];
-  knn_graph_dev = ReadKNNGraphToGlobalMemory(origin_knn_graph);
 
   int *global_locks_dev;
   cudaMalloc(&global_locks_dev, g_size * sizeof(int));
-  vector<int> zeros(g_size);
-  cudaMemcpy(global_locks_dev, zeros.data(), g_size * sizeof(int),
-             cudaMemcpyHostToDevice);
+  cudaMemset(global_locks_dev, 0, g_size * sizeof(int));
   cuda_status = cudaGetLastError();
 
   if (cuda_status != cudaSuccess) {
@@ -1576,8 +1160,8 @@ float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
   dim3 block_size(640);
   dim3 grid_size(g_size);
   // cerr << "Start kernel." << endl;
-  const int num_new_max = GetMaxListSize(newg);
-  const int num_old_max = GetMaxListSize(oldg);
+  const int num_new_max = GetMaxListSize(newg_list_size_dev, g_size);
+  const int num_old_max = GetMaxListSize(oldg_list_size_dev, g_size);
   cerr << "Num new max: " << num_new_max << endl;
   cerr << "Num old max: " << num_old_max << endl;
   size_t shared_memory_size =
@@ -1588,46 +1172,26 @@ float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
   cerr << "Shmem kernel1 costs: " << shared_memory_size << endl;
 
   auto start = chrono::steady_clock::now();
+  MarkAllToOld<<<grid_size, block_size>>>(origin_knn_graph_dev);
+  cudaDeviceSynchronize();
+  // NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
+  //     knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new, dest_dev_new,
+  //     num_new_max);
   NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
-      knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new, dest_dev_new,
-      num_new_max);
+      origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
+      newg_list_size_dev, num_new_max);
   int neighb_num_max = num_new_max + num_old_max;
-
-#if DONT_TILE
-  shared_memory_size =
-      max(neighb_num_max * SKEW_DIM * sizeof(float),
-          neighb_num_max * NEIGHB_CACHE_NUM * sizeof(NNDElement)) +
-      num_new_max * num_old_max * sizeof(float) + neighb_num_max * sizeof(int);
-  if (shared_memory_size < MAX_SHMEM) {
-    cerr << "Shmem kernel2 costs: " << shared_memory_size << endl;
-    block_size = dim3(640);
-    NewOldNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
-        knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new,
-        dest_dev_new, num_new_max, edges_dev_old, dest_dev_old, num_old_max);
-  } else {
-    block_size = dim3(TILE_WIDTH * TILE_WIDTH);
-    int neighb_num_max = num_new_max + num_old_max;
-    shared_memory_size = (num_new_max * num_old_max) * sizeof(float) +
-                         neighb_num_max * sizeof(int) +
-                         neighb_num_max * NEIGHB_CACHE_NUM * sizeof(NNDElement);
-    cerr << "Shmem tiled kernel2 costs: " << shared_memory_size << endl;
-    TiledNewOldNeighborsCompareKernel<<<grid_size, block_size,
-                                        shared_memory_size>>>(
-        knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new,
-        dest_dev_new, num_new_max, edges_dev_old, dest_dev_old, num_old_max);
-  }
-#else
   block_size = dim3(TILE_WIDTH * TILE_WIDTH);
   shared_memory_size = (num_new_max * num_old_max) * sizeof(float) +
                        neighb_num_max * sizeof(int);
   cerr << "Shmem tiled kernel2 costs: " << shared_memory_size << endl;
   TiledNewOldNeighborsCompareKernel<<<grid_size, block_size,
                                       shared_memory_size>>>(
-      knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new, dest_dev_new,
-      num_new_max, edges_dev_old, dest_dev_old, num_old_max);
-#endif
-
+      origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
+      newg_list_size_dev, num_new_max, oldg_dev, oldg_list_size_dev,
+      num_old_max);
   cudaDeviceSynchronize();
+  block_size = dim3(NEIGHB_NUM_PER_LIST);
   auto end = chrono::steady_clock::now();
   kernel_time =
       (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
@@ -1641,25 +1205,96 @@ float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
     exit(-1);
   }
   // cerr << "End kernel." << endl;
-  cuda_status =
-      cudaMemcpy(knn_graph, knn_graph_dev, g_size * k * sizeof(NNDElement),
-                 cudaMemcpyDeviceToHost);
   if (cuda_status != cudaSuccess) {
     cerr << cudaGetErrorString(cuda_status) << endl;
     cerr << "knn_graph cudaMemcpy failed" << endl;
     exit(-1);
   }
 
-  ToHostGraph(&origin_knn_graph, knn_graph, g_size, k);
 
-  delete[] knn_graph;
-  cudaFree(edges_dev_new);
-  cudaFree(dest_dev_new);
-  cudaFree(edges_dev_old);
-  cudaFree(dest_dev_old);
-  cudaFree(knn_graph_dev);
+  cudaFree(global_locks_dev);
   return kernel_time;
 }
+
+// float UpdateGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
+//                   float *vectors_dev, const Graph &newg, const Graph &oldg,
+//                   const int k) {
+//   float kernel_time = 0;
+//   auto &origin_knn_graph = *origin_knn_graph_ptr;
+//   int *edges_dev_new, *dest_dev_new;
+//   tie(edges_dev_new, dest_dev_new) = ReadGraphToGlobalMemory(newg);
+//   int *edges_dev_old, *dest_dev_old;
+//   tie(edges_dev_old, dest_dev_old) = ReadGraphToGlobalMemory(oldg);
+//   size_t g_size = newg.size();
+//   cudaError_t cuda_status;
+//   NNDElement *knn_graph_dev, *knn_graph = new NNDElement[g_size * k];
+//   knn_graph_dev = ReadKNNGraphToGlobalMemory(origin_knn_graph);
+//   int *global_locks_dev;
+//   cudaMalloc(&global_locks_dev, g_size * sizeof(int));
+//   vector<int> zeros(g_size);
+//   cudaMemcpy(global_locks_dev, zeros.data(), g_size * sizeof(int),
+//              cudaMemcpyHostToDevice);
+//   cuda_status = cudaGetLastError();
+//   if (cuda_status != cudaSuccess) {
+//     cerr << cudaGetErrorString(cuda_status) << endl;
+//     cerr << "Initiate failed" << endl;
+//     exit(-1);
+//   }
+//   dim3 block_size(640);
+//   dim3 grid_size(g_size);
+//   // cerr << "Start kernel." << endl;
+//   const int num_new_max = GetMaxListSize(newg);
+//   const int num_old_max = GetMaxListSize(oldg);
+//   cerr << "Num new max: " << num_new_max << endl;
+//   cerr << "Num old max: " << num_old_max << endl;
+//   size_t shared_memory_size =
+//       num_new_max * SKEW_DIM * sizeof(float) +
+//       (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
+//       num_new_max * sizeof(int);
+//   cerr << "Shmem kernel1 costs: " << shared_memory_size << endl;
+//   auto start = chrono::steady_clock::now();
+//   NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
+//       knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new, dest_dev_new,
+//       num_new_max);
+//   int neighb_num_max = num_new_max + num_old_max;
+//   block_size = dim3(TILE_WIDTH * TILE_WIDTH);
+//   shared_memory_size = (num_new_max * num_old_max) * sizeof(float) +
+//                        neighb_num_max * sizeof(int);
+//   cerr << "Shmem tiled kernel2 costs: " << shared_memory_size << endl;
+//   TiledNewOldNeighborsCompareKernel<<<grid_size, block_size,
+//                                       shared_memory_size>>>(
+//       knn_graph_dev, global_locks_dev, vectors_dev, edges_dev_new, dest_dev_new,
+//       num_new_max, edges_dev_old, dest_dev_old, num_old_max);
+//   cudaDeviceSynchronize();
+//   auto end = chrono::steady_clock::now();
+//   kernel_time =
+//       (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+//           .count() /
+//       1e6;
+//   cuda_status = cudaGetLastError();
+//   if (cuda_status != cudaSuccess) {
+//     cerr << cudaGetErrorString(cuda_status) << endl;
+//     cerr << "Kernel failed" << endl;
+//     exit(-1);
+//   }
+//   // cerr << "End kernel." << endl;
+//   cuda_status =
+//       cudaMemcpy(knn_graph, knn_graph_dev, g_size * k * sizeof(NNDElement),
+//                  cudaMemcpyDeviceToHost);
+//   if (cuda_status != cudaSuccess) {
+//     cerr << cudaGetErrorString(cuda_status) << endl;
+//     cerr << "knn_graph cudaMemcpy failed" << endl;
+//     exit(-1);
+//   }
+//   ToHostGraph(&origin_knn_graph, knn_graph, g_size, k)
+//   delete[] knn_graph;
+//   cudaFree(edges_dev_new);
+//   cudaFree(dest_dev_new);
+//   cudaFree(edges_dev_old);
+//   cudaFree(dest_dev_old);
+//   cudaFree(knn_graph_dev);
+//   return kernel_time;
+// }
 
 void OutputGraph(const xmuknn::Graph &g, const string &path) {
   ofstream out(path);
@@ -1743,20 +1378,18 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   Graph newg, oldg;
   float get_nb_graph_time = 0;
   float kernel_costs = 0;
+  ToDevKNNGraph(knn_graph_dev, g, NEIGHB_NUM_PER_LIST);
   auto sum_start = chrono::steady_clock::now();
   long long cmp_times = 0;
   for (int t = 0; t < iteration; t++) {
     cerr << "Start generating NBGraph." << endl;
     // Should be removed after testing.
-    ToDevKNNGraph(knn_graph_dev, g, NEIGHB_NUM_PER_LIST);
     auto start = chrono::steady_clock::now();
     PrepareForUpdate(graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, 
                      graph_old_dev, oldg_list_size_dev, oldg_revlist_size_dev,
                      knn_graph_dev, graph_size);
-    GetTestGraph(&newg, &oldg, graph_new_dev, newg_list_size_dev,
-                 graph_old_dev, oldg_list_size_dev, graph_size);
-    OutputGraph(newg, "/home/hwang/codes/GPU_KNNG/results/graph_a.txt");
-    OutputGraph(g, "/home/hwang/codes/GPU_KNNG/results/graph_origin.txt");
+    // OutputGraph(newg, "/home/hwang/codes/GPU_KNNG/results/graph_a.txt");
+    // OutputGraph(g, "/home/hwang/codes/GPU_KNNG/results/graph_origin.txt");
     // GetNBGraph(&newg, &oldg, g, vectors, vecs_size, vecs_dim);
     // OutputGraph(newg, "/home/hwang/codes/GPU_KNNG/results/graph_b.txt");
     auto end = chrono::steady_clock::now();
@@ -1764,16 +1397,20 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
         (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
             .count() /
         1e6;
-    get_nb_graph_time += tmp_time;
-    for (int i = 0; i < newg.size(); i++) {
-      cmp_times += (newg[i].size() - 1) * newg[i].size() / 2 +
-                   newg[i].size() * oldg[i].size();
-    }
+    // get_nb_graph_time += tmp_time;
+    // GetTestGraph(&newg, &oldg, graph_new_dev, newg_list_size_dev, graph_old_dev,
+    //              oldg_list_size_dev, graph_size); // Unnecessary slow for testing.
+    // for (int i = 0; i < newg.size(); i++) {
+    //   cmp_times += (newg[i].size() - 1) * newg[i].size() / 2 +
+    //                newg[i].size() * oldg[i].size();
+    // }
     cerr << "GetNBGraph costs " << tmp_time << endl;
 
     start = chrono::steady_clock::now();
-    // long long update_times = 0;
-    float tmp_kernel_costs = UpdateGraph(&g, vectors_dev, newg, oldg, k);
+    // float tmp_kernel_costs = UpdateGraph(&g, vectors_dev, newg, oldg, k);
+    float tmp_kernel_costs =
+        UpdateGraph(knn_graph_dev, graph_size, vectors_dev, graph_new_dev,
+                    newg_list_size_dev, graph_old_dev, oldg_list_size_dev, k);
     kernel_costs += tmp_kernel_costs;
     end = chrono::steady_clock::now();
     float it_tmp_costs =
@@ -1784,6 +1421,7 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
     cerr << "Kernel costs " << tmp_kernel_costs << endl;
     cerr << endl;
   }
+  ToHostKNNGraph(&g, knn_graph_dev, graph_size, k);
   auto sum_end = chrono::steady_clock::now();
   float sum_costs = (float)chrono::duration_cast<std::chrono::microseconds>(
                         sum_end - sum_start)
