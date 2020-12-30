@@ -35,19 +35,24 @@ void TestCUDANNDescent() {
   // string base_path
   //     = "/home/hwang//data/sift10k/sift10k.txt";
   // string out_path
-  //     = "/home/hwang/data/result/sift10k_knng_k32.txt";
+  //     = "/home/hwang/data/result/sift10k_knng_k64.txt";
   // string ground_truth_path
   //     = "/home/hwang//data/sift10k/sift10k_groundtruth_self.txt";
 
   string base_path = "/home/hwang//data/sift100k/sift100k.txt";
-  string out_path = "/home/hwang/data/result/sift100k_knng_k30.txt";
+  string out_path = "/home/hwang/data/result/sift100k_knng_k64.txt";
   string ground_truth_path =
       "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
+
+  // string base_path = "/home/hwang/data/glove1m/glove1m_norm_base.txt";
+  // string out_path = "/home/hwang/data/result/glove1m_knng_k64.txt";
+  // string ground_truth_path =
+  //     "/home/hwang/data/glove1m/glove1m_gold_knn40.txt";
 
   // string base_path
   //     = "/home/hwang//data/sift1m/sift1m.txt";
   // string out_path
-  //     = "/home/hwang/data/result/sift1m_knng_k30.txt";
+  //     = "/home/hwang/data/result/sift1m_knng_k64.txt";
   // string ground_truth_path
   //     = "/home/hwang//data/sift1m/sift1m_gold_knn40_sorted.txt";
 
@@ -83,6 +88,7 @@ void TestCUDANNDescent() {
               1e6
        << endl;
   evaluate(out_path, ground_truth_path);
+  delete[] vectors;
 }
 
 int main() {

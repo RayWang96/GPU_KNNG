@@ -43,19 +43,11 @@ const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 64;
 const int INSERT_IT_NUM =
     NEIGHB_NUM_PER_LIST / 32 + (NEIGHB_NUM_PER_LIST % 32 != 0);
-#if INSERT_MIN_ONLY
 const int NEIGHB_CACHE_NUM = 1;
-#else
-const int NEIGHB_CACHE_NUM = 10;
-#endif
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
 const int SAMPLE_NUM = 32; // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
 const int SKEW_DIM = VEC_DIM + 1;
-
-#if DONT_TILE
-const int MAX_SHMEM = 49152;
-#endif
 
 __device__ int for_check = 0;
 
@@ -1170,11 +1162,15 @@ __global__ void InitKNNGraphDistanceKernel(NNDElement *knn_graph,
         knn_graph[list_id * NEIGHB_NUM_PER_LIST + i].label() * VEC_DIM;
     for (int j = 0; j < it_num; j++) {
       int vec_elem_pos = j * blockDim.x + tx;
-      if (vec_elem_pos >= VEC_DIM) break;
-      float elem_a = vectors[vec_a_pos + vec_elem_pos];
-      float elem_b = vectors[vec_b_pos + vec_elem_pos];
-      float diff = elem_a - elem_b;
-      diff *= diff;
+      float elem_a, elem_b, diff;
+      if (vec_elem_pos < VEC_DIM) {
+        elem_a = vectors[vec_a_pos + vec_elem_pos];
+        elem_b = vectors[vec_b_pos + vec_elem_pos];
+        diff = elem_a - elem_b;
+        diff *= diff;
+      } else {
+        diff = 0;
+      }
       for (int offset = warpSize / 2; offset > 0; offset /= 2)
         diff = diff + __shfl_down_sync(FULL_MASK, diff, offset);
       sum += diff;
@@ -1282,7 +1278,7 @@ namespace gpuknn {
 vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
                                      const int vecs_dim) {
   int k = NEIGHB_NUM_PER_LIST;
-  int iteration = 6;
+  int iteration = 10;
   auto cuda_status = cudaSetDevice(DEVICE_ID);
 
   float *vectors_dev;
@@ -1302,7 +1298,6 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   cudaMalloc(&knn_graph_dev, (size_t)graph_size * k * sizeof(NNDElement));
   Graph result(vecs_size);
   vector<vector<NNDElement>> g(vecs_size);
-  vector<int> tmp_vec;
   InitRandomKNNGraph(knn_graph_dev, graph_size, vectors_dev);
   cuda_status = cudaGetLastError();
   if (cuda_status != cudaSuccess) {
