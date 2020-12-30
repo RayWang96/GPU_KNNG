@@ -50,7 +50,7 @@ const int NEIGHB_CACHE_NUM = 10;
 #endif
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
-const int SAMPLE_NUM = 30; // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
+const int SAMPLE_NUM = 32; // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
 const int SKEW_DIM = VEC_DIM + 1;
 
 #if DONT_TILE
@@ -73,7 +73,7 @@ __global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
   __shared__ int cache2_size;
   int list_id = blockIdx.x;
   int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
-  int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
+  int nn_list_base_pos = list_id * (SAMPLE_NUM * 2);
   int tx = threadIdx.x;
   if (tx == 0) {
     cache1_size = cache2_size = 0;
@@ -107,10 +107,10 @@ __global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
   for (int i = 0; i < it_num; i++) {
     int local_pos = i * warpSize + tx;
     if (local_pos < cache1_size) {
-      graph_new_dev[res_g_base_pos + local_pos] = new_elements_cache[local_pos];
+      graph_new_dev[nn_list_base_pos + local_pos] = new_elements_cache[local_pos];
     }
     if (local_pos < cache2_size) {
-      graph_old_dev[res_g_base_pos + local_pos] = old_elements_cache[local_pos];
+      graph_old_dev[nn_list_base_pos + local_pos] = old_elements_cache[local_pos];
     }
   }
   __syncthreads();
@@ -139,6 +139,12 @@ __device__ __forceinline__ NNDElement XorSwap(NNDElement x, int mask, int dir) {
     return x < y == dir ? y : x;
 }
 
+__device__ __forceinline__ int XorSwap(int x, int mask, int dir) {
+    int y;
+    y = __shfl_xor_sync(FULL_MASK, x, mask, warpSize);
+    return x < y == dir ? y : x;
+}
+
 __device__ __forceinline__ uint Bfe(uint lane_id, uint pos) {
     uint res;
     asm("bfe.u32 %0,%1,%2,%3;"
@@ -146,7 +152,8 @@ __device__ __forceinline__ uint Bfe(uint lane_id, uint pos) {
     return res;
 }
 
-__device__ __forceinline__ void BitonicSort(NNDElement *sort_element_ptr, const int lane_id) {
+template<typename T>
+__device__ __forceinline__ void BitonicSort(T *sort_element_ptr, const int lane_id) {
     auto &sort_elem = *sort_element_ptr;
     sort_elem = XorSwap(sort_elem, 0x01, Bfe(lane_id, 1) ^ Bfe(lane_id, 0));
     sort_elem = XorSwap(sort_elem, 0x02, Bfe(lane_id, 2) ^ Bfe(lane_id, 1));
@@ -165,6 +172,34 @@ __device__ __forceinline__ void BitonicSort(NNDElement *sort_element_ptr, const 
     sort_elem = XorSwap(sort_elem, 0x01,                   Bfe(lane_id, 0));
     return;
 }
+
+template <typename T>
+__device__ int MergeList(T *A, const int m, T *B, const int n, T *C) {
+  int i = 0, j = 0, cnt = 0;
+  while ((i < m) && (j < n)) {
+    if (A[i] <= B[j]) {
+      C[cnt++] = A[i++];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    } else {
+      C[cnt++] = B[j++];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    }
+  }
+
+  if (i == m) {
+    for (; j < n; j++) {
+      C[cnt++] = B[j];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    }
+  } else {
+    for (; i < m; i++) {
+        C[cnt++] = A[i];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    }
+  }
+ EXIT:
+  return cnt;
+ }
 
 __device__ int RemoveDuplicates(int *nums, int nums_size) {
   if (nums_size < 2) return nums_size;
@@ -185,7 +220,7 @@ __global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
   int tx = threadIdx.x;
   int list_id = blockIdx.x;
   int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
-  int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
+  int nn_list_base_pos = list_id * (SAMPLE_NUM * 2);
   if (tx == 0) {
     cache1_size = newg_list_size_dev[list_id];
     cache2_size = oldg_list_size_dev[list_id];
@@ -196,11 +231,11 @@ __global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
     int local_pos = i * warpSize + tx;
     if (local_pos < cache1_size) {
       new_elements_cache[local_pos] = 
-        graph_new_dev[res_g_base_pos + local_pos];
+        graph_new_dev[nn_list_base_pos + local_pos];
     }
     if (local_pos < cache2_size) {
       old_elements_cache[local_pos] = 
-        graph_old_dev[res_g_base_pos + local_pos];
+        graph_old_dev[nn_list_base_pos + local_pos];
     }
   }
   __syncthreads();
@@ -236,10 +271,14 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
   __shared__ int new_elements_cache[SAMPLE_NUM * 2];
   __shared__ int newg_list_size, newg_revlist_size;
   __shared__ int old_elements_cache[SAMPLE_NUM * 2];
+  __shared__ int sorted_elements_cache[32];
+  __shared__ int merged_list_cache[NEIGHB_NUM_PER_LIST];
   __shared__ int oldg_list_size, oldg_revlist_size;
   int tx = threadIdx.x;
   int list_id = blockIdx.x;
-  int res_g_base_pos = list_id * (SAMPLE_NUM * 2);
+  int nn_list_base_pos = list_id * (SAMPLE_NUM * 2);
+  int lane_id = tx % warpSize;
+
   if (tx == 0) {
     newg_list_size = newg_list_size_dev[list_id];
     oldg_list_size = oldg_list_size_dev[list_id];
@@ -248,38 +287,57 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
   }
   __syncthreads();
   int it_num = GetItNum(SAMPLE_NUM * 2, warpSize);
+  int list_new_size = 0, list_old_size = 0;
   for (int i = 0; i < it_num; i++) {
     int local_pos = i * warpSize + tx;
-    if (local_pos < SAMPLE_NUM * 2) {
-      new_elements_cache[local_pos] = 
-        graph_new_dev[res_g_base_pos + local_pos];
+
+    int sort_elem = LARGE_INT;
+    if ((local_pos < newg_list_size) ||
+        (local_pos >= SAMPLE_NUM &&
+         local_pos < SAMPLE_NUM + newg_revlist_size)) {
+      sort_elem = graph_new_dev[nn_list_base_pos + local_pos];
     }
-    if (local_pos < SAMPLE_NUM * 2) {
-      old_elements_cache[local_pos] = 
-        graph_old_dev[res_g_base_pos + local_pos];
+    BitonicSort(&sort_elem, lane_id);
+    sorted_elements_cache[lane_id] = sort_elem;
+    if (lane_id == 0) {
+      list_new_size =
+          MergeList(new_elements_cache, list_new_size, sorted_elements_cache,
+                    warpSize, merged_list_cache);
+    }
+    list_new_size = __shfl_sync(FULL_MASK, list_new_size, 0);
+    int copy_it_num = GetItNum(list_new_size, warpSize);
+    for (int j = 0; j < copy_it_num; j++) {
+      int pos = j * warpSize + lane_id;
+      if (pos >= SAMPLE_NUM * 2) break;
+      new_elements_cache[pos] = merged_list_cache[pos];
+    }
+
+    sort_elem = LARGE_INT;
+    if ((local_pos < oldg_list_size) ||
+        (local_pos >= SAMPLE_NUM &&
+         local_pos < SAMPLE_NUM + oldg_revlist_size)) {
+      sort_elem = graph_old_dev[nn_list_base_pos + local_pos];
+    }
+    BitonicSort(&sort_elem, lane_id);
+    sorted_elements_cache[lane_id] = sort_elem;
+    if (lane_id == 0) {
+      list_old_size =
+          MergeList(old_elements_cache, list_old_size, sorted_elements_cache,
+                    warpSize, merged_list_cache);
+    }
+    list_old_size = __shfl_sync(FULL_MASK, list_old_size, 0);
+    copy_it_num = GetItNum(list_old_size, warpSize);
+    for (int j = 0; j < copy_it_num; j++) {
+      int pos = j * warpSize + lane_id;
+      if (pos >= SAMPLE_NUM * 2) break;
+      old_elements_cache[pos] = merged_list_cache[pos];
     }
   }
   __syncthreads();  
-
   if (tx == 0) {
-    for (int i = newg_list_size; i < SAMPLE_NUM; i++) {
-      new_elements_cache[i] = LARGE_INT;
-    }
-    for (int i = oldg_list_size; i < SAMPLE_NUM; i++) {
-      old_elements_cache[i] = LARGE_INT;
-    }
-    for (int i = SAMPLE_NUM + newg_revlist_size; i < SAMPLE_NUM * 2; i++) {
-      new_elements_cache[i] = LARGE_INT;
-    }
-    for (int i = SAMPLE_NUM + oldg_revlist_size; i < SAMPLE_NUM * 2; i++) {
-      old_elements_cache[i] = LARGE_INT;
-    }
-    // Dont need LARGE_INT
-    InsertSort(new_elements_cache, SAMPLE_NUM * 2);
-    InsertSort(old_elements_cache, SAMPLE_NUM * 2);
-    newg_list_size = RemoveDuplicates(new_elements_cache, SAMPLE_NUM * 2);
+    newg_list_size = RemoveDuplicates(new_elements_cache, list_new_size);
     newg_list_size -= (new_elements_cache[newg_list_size - 1] == LARGE_INT);
-    oldg_list_size = RemoveDuplicates(old_elements_cache, SAMPLE_NUM * 2);
+    oldg_list_size = RemoveDuplicates(old_elements_cache, list_old_size);
     oldg_list_size -= (old_elements_cache[oldg_list_size - 1] == LARGE_INT);
     for (int i = 0; i < newg_list_size; i++) {
       for (int j = 0; j < oldg_list_size; j++) {
@@ -296,18 +354,17 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
       }
     }
     newg_list_size = pos;
-    // Really slow!!! But easy.
   }
   __syncthreads();
   it_num = GetItNum(SAMPLE_NUM * 2, warpSize);
   for (int i = 0; i < it_num; i++) {
     int local_pos = i * warpSize + tx;
     if (local_pos < newg_list_size) {
-      graph_new_dev[res_g_base_pos + local_pos] =
+      graph_new_dev[nn_list_base_pos + local_pos] =
         new_elements_cache[local_pos];
     }
     if (local_pos < oldg_list_size) {
-      graph_old_dev[res_g_base_pos + local_pos] = 
+      graph_old_dev[nn_list_base_pos + local_pos] = 
         old_elements_cache[local_pos];
     }
   }
@@ -1128,38 +1185,9 @@ __global__ void InitKNNGraphDistanceKernel(NNDElement *knn_graph,
   }
 }
 
-__device__ int MergeList(NNDElement *A, const int m, NNDElement *B,
-                          const int n, NNDElement *C){
-  int i = 0, j = 0, cnt = 0;
-  while ((i < m) && (j < n)) {
-    if (A[i] <= B[j]) {
-      C[cnt++] = A[i++];
-      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
-    } else {
-      C[cnt++] = B[j++];
-      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
-    }
-  }
-
-  if (i == m) {
-    for (; j < n; j++) {
-      C[cnt++] = B[j];
-      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
-    }
-  } else {
-    for (; i < m; i++) {
-        C[cnt++] = A[i];
-      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
-    }
-  }
- EXIT:
-  return cnt;
-}
-
 __global__ void SortKNNGraphKernel(NNDElement *knn_graph,
                                    const int graph_size) {
   __shared__ NNDElement knn_list_cache[NEIGHB_NUM_PER_LIST];
-  __shared__ int list_size;
   __shared__ NNDElement sorted_elements_cache[32];
   __shared__ NNDElement merged_list_cache[NEIGHB_NUM_PER_LIST];
 
@@ -1168,8 +1196,7 @@ __global__ void SortKNNGraphKernel(NNDElement *knn_graph,
   int global_base_pos = list_id * NEIGHB_NUM_PER_LIST;
   int tx = threadIdx.x;
   int lane_id = tx % warpSize;
-
-  if (tx == 0) list_size = 0;
+  int list_size = 0;
   for (int i = 0; i < it_num; i++) {
     int pos = i * warpSize + tx;
     if (pos >= NEIGHB_NUM_PER_LIST) break;
