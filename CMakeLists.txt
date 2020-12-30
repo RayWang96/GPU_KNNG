@@ -14,8 +14,7 @@ add_library(knncuda STATIC
 )
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-find_package(cuBLAS)
-
+find_package(CUDA QUIET)
 # set(CMAKE_VERBOSE_MAKEFILE ON)
 target_compile_features(knncuda PUBLIC cxx_std_14)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -std=c++14 -arch=sm_86 -rdc=true -Xcompiler -fopenmp")
@@ -26,5 +25,5 @@ set_property(TARGET gknng PROPERTY CUDA_SEPERABLE_COMPILATION ON)
 set_property(TARGET gknng PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 set_property(TARGET gknng PROPERTY CUDA_ARCHITECTURES 86)
 
-target_link_libraries(gknng PRIVATE knncuda ${CUBLAS_LIBRARIES})
+target_link_libraries(gknng PRIVATE knncuda ${CUBLAS_LIBRARIES} ${CUDA_curand_LIBRARY})
  

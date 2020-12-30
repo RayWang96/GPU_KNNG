@@ -5,7 +5,7 @@
 
 #include "cuda_runtime.h"
 
-#define RE_EPS 1e-10
+#define EPS 1e-10
 struct NNDElement {
   float distance_;
   int label_;
@@ -35,12 +35,12 @@ struct NNDElement {
       label_ = -label_ - 1; 
   }    
   __host__ __device__ bool operator<(const NNDElement& other) const {
-    if (fabs(this->distance_ - other.distance_) < RE_EPS)
+    if (fabs(this->distance_ - other.distance_) < EPS)
       return this->label() < other.label();
     return this->distance_ < other.distance_;
   }
   __host__ __device__ bool operator==(const NNDElement& other) const {
-    return this->label() == other.label();
+    return this->label() == other.label() && (fabs(this->distance_ - other.distance_) < EPS);
   }
   __host__ __device__ bool operator>=(const NNDElement& other) const {
     return !(*this < other);

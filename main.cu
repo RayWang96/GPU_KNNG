@@ -3,6 +3,7 @@
 #include <iostream>
 #include <istream>
 #include <vector>
+#include <assert.h>
 
 #include "gpuknn/nndescent.cuh"
 #include "tools/distfunc.hpp"
@@ -69,7 +70,8 @@ void TestCUDANNDescent() {
     const auto &x = knn_graph[i];
     out << i << " " << x.size() << " ";
     for (auto y : x) {
-      // out << y.distance << " " << y.id << "\t";
+      // out << y.distance() << " " << y.label() << "\t";
+      assert(y.label() != i);
       out << y.label() << "\t";
     }
     out << endl;
