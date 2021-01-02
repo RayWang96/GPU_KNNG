@@ -56,6 +56,11 @@ void TestCUDANNDescent() {
   // string ground_truth_path
   //     = "/home/hwang//data/sift1m/sift1m_gold_knn40_sorted.txt";
 
+  // string base_path = "/home/hwang//data/sift10m/sift10m.txt";
+  // string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
+  // string ground_truth_path =
+  //     "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
+
   auto out = ofstream(out_path);
   if (!out.is_open()) {
     cerr << "Output file is not opened!" << endl;
