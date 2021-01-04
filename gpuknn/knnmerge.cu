@@ -142,8 +142,8 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float **vectors_dev_ptr,
   
   MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
                vectors_second_dev, vectors_second_size);
-  NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM);
-
+  NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
+                  5);
 
   if (!have_random_knngraph) {
     cudaFree(random_knngraph_dev);

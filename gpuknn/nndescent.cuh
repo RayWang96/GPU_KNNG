@@ -17,9 +17,9 @@ const int SAMPLE_NUM = 32;  // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
 const int SKEW_DIM = VEC_DIM + 1;
 
 namespace gpuknn {
-void NNDescentRefine(NNDElement *knngraph_dev,
+void NNDescentRefine(NNDElement *knngraph_result_dev_ptr,
                      const float *vectors_dev, const int vecs_size,
-                     const int vecs_dim, const int iteration = 3);
+                     const int vecs_dim, const int iteration = 6);
 void NNDescent(NNDElement **knngraph_result_dev_ptr, const float *vectors_dev,
                const int vecs_size, const int vecs_dim,
                const int iteration = 6);

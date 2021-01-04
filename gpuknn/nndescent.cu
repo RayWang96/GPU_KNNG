@@ -1003,8 +1003,10 @@ int GetMaxListSize(int *list_size_dev, const int g_size) {
 }
 
 float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
-                  const float *vectors_dev, int *newg_dev, int *newg_list_size_dev,
-                  int *oldg_dev, int *oldg_list_size_dev, const int k) {
+                  const float *vectors_dev, int *newg_dev,
+                  int *newg_list_size_dev, int *oldg_dev,
+                  int *oldg_list_size_dev, const int k,
+                  const bool calc_between_new_neighbs = true) {
   float kernel_time = 0;
   cudaError_t cuda_status;
 
@@ -1036,9 +1038,11 @@ float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
   auto start = chrono::steady_clock::now();
   MarkAllToOld<<<grid_size, block_size>>>(origin_knn_graph_dev);
   cudaDeviceSynchronize();
-  NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
-      origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
-      newg_list_size_dev, num_new_max);
+  if (calc_between_new_neighbs) {
+    NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
+        origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
+        newg_list_size_dev, num_new_max);
+  }
   int neighb_num_max = num_new_max + num_old_max;
   block_size = dim3(TILE_WIDTH * TILE_WIDTH);
   shared_memory_size = (num_new_max * num_old_max) * sizeof(float) +
@@ -1300,9 +1304,9 @@ void NNDescentRefine(NNDElement *knngraph_dev,
     // }
     cerr << "GetNBGraph costs " << tmp_time << endl;
     start = chrono::steady_clock::now();
-    float tmp_kernel_costs =
-        UpdateGraph(knngraph_dev, graph_size, vectors_dev, graph_new_dev,
-                    newg_list_size_dev, graph_old_dev, oldg_list_size_dev, k);
+    float tmp_kernel_costs = UpdateGraph(
+        knngraph_dev, graph_size, vectors_dev, graph_new_dev,
+        newg_list_size_dev, graph_old_dev, oldg_list_size_dev, k, false);
     kernel_costs += tmp_kernel_costs;
     end = chrono::steady_clock::now();
     float it_tmp_costs =
@@ -1326,6 +1330,7 @@ void NNDescentRefine(NNDElement *knngraph_dev,
   cerr << "Update costs: " << iteration_costs << endl;
   cerr << "Get NB graph costs: " << get_nb_graph_time << endl;
   cerr << "All procedure costs: " << sum_costs << endl;
+  cerr << endl;
   cudaFree(graph_new_dev);
   cudaFree(newg_list_size_dev);
   cudaFree(graph_old_dev);
@@ -1414,6 +1419,7 @@ void NNDescent(NNDElement **knngraph_result_dev_ptr, const float *vectors_dev,
   cerr << "Update costs: " << iteration_costs << endl;
   cerr << "Get NB graph costs: " << get_nb_graph_time << endl;
   cerr << "All procedure costs: " << sum_costs << endl;
+  cerr << endl;
   cudaFree(graph_new_dev);
   cudaFree(newg_list_size_dev);
   cudaFree(graph_old_dev);
