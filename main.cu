@@ -5,6 +5,8 @@
 #include <vector>
 #include <assert.h>
 
+#include "gpuknn/knnmerge.cuh"
+#include "gpuknn/knncuda_tools.cuh"
 #include "gpuknn/nndescent.cuh"
 #include "tools/distfunc.hpp"
 #include "tools/filetool.hpp"
@@ -13,7 +15,7 @@
 using namespace std;
 using namespace xmuknn;
 
-void evaluate(const string &data_path, const string &ground_truth_path) {
+void Evaluate(const string &data_path, const string &ground_truth_path) {
   string cmd = "python3 -u \"/home/hwang/codes/GPU_KNNG/tools/evaluate.py\"";
   cmd += " ";
   cmd += data_path;
@@ -21,12 +23,6 @@ void evaluate(const string &data_path, const string &ground_truth_path) {
   cmd += ground_truth_path;
   int re = system(cmd.c_str());
 }
-
-struct KNNItem {
-  int id;
-  bool visited = false;
-  KNNItem(int id, bool visited) : id(id), visited(visited) {}
-};
 
 void TestCUDANNDescent() {
   int k = 30;
@@ -71,9 +67,7 @@ void TestCUDANNDescent() {
   int vecs_size, vecs_dim;
   FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
 
-  auto start = chrono::steady_clock::now();
   auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim);
-  auto end = chrono::steady_clock::now();
 
   out << knn_graph.size() << " " << k << endl;
   for (int i = 0; i < knn_graph.size(); i++) {
@@ -87,19 +81,95 @@ void TestCUDANNDescent() {
     out << endl;
   }
   out.close();
-  cerr << "GPU NNDescent costs: "
-       << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
-                  .count() /
-              1e6
-       << endl;
-  evaluate(out_path, ground_truth_path);
+  Evaluate(out_path, ground_truth_path);
   delete[] vectors;
+  return;
+}
+
+void DivideData(float *vectors, const int dim, float **vectors_first_ptr,
+                const int vectors_first_size, float **vectors_second_ptr,
+                const int vectors_second_size) {
+  float *&vectors_first = *vectors_first_ptr;
+  float *&vectors_second = *vectors_second_ptr;
+  vectors_first = new float[vectors_first_size * dim];
+  vectors_second = new float[vectors_second_size * dim];
+  for (int i = 0; i < vectors_first_size; i++) {
+    for (int j = 0; j < dim; j++) {
+      vectors_first[i * dim + j] = vectors[i * dim + j];
+    }
+  }
+  for (int i = 0; i < vectors_second_size; i++) {
+    for (int j = 0; j < dim; j++) {
+      vectors_second[i * dim + j] = vectors[(i + vectors_first_size) * dim + j];
+    }
+  }
+  return;
+}
+
+void TestCUDAMerge() {
+  string base_path = "/home/hwang/data/sift100k/sift100k.txt";
+  string out_path = "/home/hwang/data/result/sift100k_knng_k64_merged.txt";
+  string ground_truth_path =
+      "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
+  float *vectors;
+  int vecs_size, vecs_dim;
+  FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
+  int vectors_first_size = vecs_size / 2;
+  int vectors_second_size = vecs_size - vectors_first_size;
+  float *vectors_first, *vectors_second;
+  DivideData(vectors, vecs_dim, &vectors_first, vectors_first_size,
+             &vectors_second, vectors_second_size);
+  float *vectors_first_dev, *vectors_second_dev;
+  cudaMalloc(&vectors_first_dev,
+             (size_t)vectors_first_size * vecs_dim * sizeof(float));
+  cudaMalloc(&vectors_second_dev,
+             (size_t)vectors_second_size * vecs_dim * sizeof(float));
+  cudaMemcpy(vectors_first_dev, vectors_first,
+             (size_t)vectors_first_size * vecs_dim * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(vectors_second_dev, vectors_second,
+             (size_t)vectors_second_size * vecs_dim * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  NNDElement *knngraph_first_dev, *knngraph_second_dev;
+  gpuknn::NNDescent(&knngraph_first_dev, vectors_first_dev, vectors_first_size,
+                    vecs_dim);
+  gpuknn::NNDescent(&knngraph_second_dev, vectors_second_dev, vectors_second_size,
+                    vecs_dim);
+
+  NNDElement *knngraph_merged_dev;
+  float *vectors_merged_dev;
+  gpuknn::KNNMerge(&knngraph_merged_dev, &vectors_merged_dev, vectors_first_dev,
+                   vectors_first_size, knngraph_first_dev, vectors_second_dev,
+                   vectors_second_size, knngraph_second_dev);
+
+  vector<vector<NNDElement>> knngraph_host;
+  ToHostKNNGraph(&knngraph_host, knngraph_first_dev, vectors_first_size,
+                 NEIGHB_NUM_PER_LIST);
+  OutputHostKNNGraph(knngraph_host,
+                     "/home/hwang/codes/GPU_KNNG/results/graph_a.txt");
+  ToHostKNNGraph(&knngraph_host, knngraph_second_dev, vectors_second_size,
+                 NEIGHB_NUM_PER_LIST);
+  OutputHostKNNGraph(knngraph_host,
+                     "/home/hwang/codes/GPU_KNNG/results/graph_b.txt");
+  ToHostKNNGraph(&knngraph_host, knngraph_merged_dev,
+                 vectors_first_size + vectors_second_size, NEIGHB_NUM_PER_LIST);
+  OutputHostKNNGraph(knngraph_host, out_path);
+  Evaluate(out_path, ground_truth_path);
+  cudaFree(vectors_merged_dev);
+  cudaFree(knngraph_merged_dev);
+  cudaFree(knngraph_first_dev);
+  cudaFree(knngraph_second_dev);
+  delete[] vectors;
+  delete[] vectors_first;
+  delete[] vectors_second;
 }
 
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
-  TestCUDANNDescent();
+  // TestCUDANNDescent();
+  TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();

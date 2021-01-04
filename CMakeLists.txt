@@ -7,6 +7,10 @@ add_library(knncuda STATIC
     gpuknn/nndescent.cu
     gpuknn/nndescent.cuh
     gpuknn/nndescent_element.cuh
+    gpuknn/knncuda_tools.cuh
+    gpuknn/knncuda_tools.cu
+    gpuknn/knnmerge.cuh
+    gpuknn/knnmerge.cu
     tools/distfunc.hpp
     tools/filetool.hpp
     xmuknn.h
@@ -25,5 +29,5 @@ set_property(TARGET gknng PROPERTY CUDA_SEPERABLE_COMPILATION ON)
 set_property(TARGET gknng PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 set_property(TARGET gknng PROPERTY CUDA_ARCHITECTURES 86)
 
-target_link_libraries(gknng PRIVATE knncuda ${CUBLAS_LIBRARIES} ${CUDA_curand_LIBRARY})
+target_link_libraries(gknng PRIVATE knncuda ${CUDA_cublas_LIBRARY} ${CUDA_curand_LIBRARY})
  
