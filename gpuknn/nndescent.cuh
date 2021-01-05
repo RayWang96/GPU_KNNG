@@ -15,7 +15,7 @@ const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
 const int SAMPLE_NUM = 32;  // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
 const int SKEW_DIM = VEC_DIM + 1;
-
+__global__ void MarkAllToOld(NNDElement *knn_graph);
 namespace gpuknn {
 void NNDescentRefine(NNDElement *knngraph_result_dev_ptr,
                      const float *vectors_dev, const int vecs_size,

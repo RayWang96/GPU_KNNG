@@ -6,9 +6,9 @@
 namespace gpuknn {
 void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float **vectors_dev_ptr,
               const float *vectors_first_dev, const int vectors_first_size,
-              const NNDElement *knngraph_first_dev,
+              NNDElement *knngraph_first_dev,
               const float *vectors_second_dev, const int vectors_second_size,
-              const NNDElement *knngraph_second_dev,
+              NNDElement *knngraph_second_dev,
               int *random_knngraph_dev = 0);
 std::vector<std::vector<NNDElement>> KNNMerge(
     const float *vectors_first, const int vectors_first_size,

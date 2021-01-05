@@ -1036,7 +1036,7 @@ float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
   cerr << "Shmem kernel1 costs: " << shared_memory_size << endl;
 
   auto start = chrono::steady_clock::now();
-  MarkAllToOld<<<grid_size, block_size>>>(origin_knn_graph_dev);
+  MarkAllToOld<<<g_size, NEIGHB_NUM_PER_LIST>>>(origin_knn_graph_dev);
   cudaDeviceSynchronize();
   if (calc_between_new_neighbs) {
     NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
@@ -1294,14 +1294,6 @@ void NNDescentRefine(NNDElement *knngraph_dev,
             .count() /
         1e6;
     get_nb_graph_time += tmp_time;
-    // GetTestGraph(&newg, &oldg, graph_new_dev, newg_list_size_dev,
-    // graph_old_dev,
-    //              oldg_list_size_dev, graph_size); // Unnecessary slow for
-    //              testing.
-    // for (int i = 0; i < newg.size(); i++) {
-    //   cmp_times += (newg[i].size() - 1) * newg[i].size() / 2 +
-    //                newg[i].size() * oldg[i].size();
-    // }
     cerr << "GetNBGraph costs " << tmp_time << endl;
     start = chrono::steady_clock::now();
     float tmp_kernel_costs = UpdateGraph(

@@ -104,27 +104,29 @@ void MergeVectors(float **vectors_dev_ptr, const float *vectors_first_dev,
   int merged_size = vectors_first_size + vectors_second_size;
   cudaMalloc(&vectors_dev,
              (size_t)merged_size * VEC_DIM * sizeof(float));
-  cudaMemcpy(vectors_dev, vectors_first_dev,
-             (size_t)vectors_first_size * VEC_DIM * sizeof(float),
-             cudaMemcpyDeviceToDevice);
-  cudaMemcpy(vectors_dev + (size_t)vectors_first_size * VEC_DIM,
-             vectors_second_dev,
-             (size_t)vectors_second_size * VEC_DIM * sizeof(float),
-             cudaMemcpyDeviceToDevice);
+  cudaMemcpyAsync(vectors_dev, vectors_first_dev,
+                  (size_t)vectors_first_size * VEC_DIM * sizeof(float),
+                  cudaMemcpyDeviceToDevice);
+  cudaMemcpyAsync(vectors_dev + (size_t)vectors_first_size * VEC_DIM,
+                  vectors_second_dev,
+                  (size_t)vectors_second_size * VEC_DIM * sizeof(float),
+                  cudaMemcpyDeviceToDevice);
 }
 
 namespace gpuknn {
 void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float **vectors_dev_ptr,
               const float *vectors_first_dev, const int vectors_first_size,
-              const NNDElement *knngraph_first_dev,
+              NNDElement *knngraph_first_dev,
               const float *vectors_second_dev, const int vectors_second_size,
-              const NNDElement *knngraph_second_dev, int *random_knngraph_dev) {
+              NNDElement *knngraph_second_dev, int *random_knngraph_dev) {
   NNDElement *&knngraph_merged_dev = *knngraph_merged_dev_ptr;
   float *&vectors_dev = *vectors_dev_ptr;
   int merged_graph_size = vectors_first_size + vectors_second_size;
   bool have_random_knngraph = random_knngraph_dev;
-
   auto start = chrono::steady_clock::now();
+  MarkAllToOld<<<vectors_first_size, NEIGHB_NUM_PER_LIST>>>(knngraph_first_dev);
+  MarkAllToOld<<<vectors_second_size, NEIGHB_NUM_PER_LIST>>>(knngraph_second_dev);
+  cudaDeviceSynchronize();
   if (!have_random_knngraph) {
     int random_knngraph_size = max(vectors_first_size, vectors_second_size);
     GenerateRandomKNNGraphIndex(&random_knngraph_dev, random_knngraph_size,
@@ -133,17 +135,17 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float **vectors_dev_ptr,
   PrepareGraphForMerge(&knngraph_merged_dev, knngraph_first_dev,
                        vectors_first_size, knngraph_second_dev,
                        vectors_second_size, random_knngraph_dev);
+  MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
+               vectors_second_dev, vectors_second_size);
   auto end = chrono::steady_clock::now();
   float time_cost =
       (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
           .count() /
       1e6;
   cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
-  
-  MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
-               vectors_second_dev, vectors_second_size);
+
   NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
-                  5);
+                  6);
 
   if (!have_random_knngraph) {
     cudaFree(random_knngraph_dev);
