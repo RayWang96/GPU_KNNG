@@ -142,7 +142,6 @@ void TestCUDAMerge() {
   gpuknn::KNNMerge(&knngraph_merged_dev, &vectors_merged_dev, vectors_first_dev,
                    vectors_first_size, knngraph_first_dev, vectors_second_dev,
                    vectors_second_size, knngraph_second_dev);
-
   vector<vector<NNDElement>> knngraph_host;
   ToHostKNNGraph(&knngraph_host, knngraph_first_dev, vectors_first_size,
                  NEIGHB_NUM_PER_LIST);

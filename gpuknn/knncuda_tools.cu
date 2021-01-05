@@ -2,12 +2,19 @@
 #include <chrono>
 #include <iostream>
 #include <fstream>
+#include <cmath>
 #include <assert.h>
+#include <thrust/device_ptr.h>
+#include <thrust/sequence.h>
+#include <thrust/extrema.h>
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "knncuda_tools.cuh"
 using namespace std;
+#ifdef __INTELLISENSE__
+#include "../intellisense_cuda_intrinsics.h"
+#endif
 void DevRNGLongLong(unsigned long long *dev_data, int n) {
   curandGenerator_t gen;
   curandCreateGenerator(&gen,
@@ -88,4 +95,49 @@ void GenerateRandomKNNGraphIndex(int **knn_graph_index_ptr, const int graph_size
          << endl;
     exit(-1);
   }
+}
+
+__device__ int RemoveDuplicates(int *nums, int nums_size) {
+  if (nums_size < 2) return nums_size;
+  int a = 0, b = 1;
+  while (b < nums_size)
+    if (nums[b++] > nums[a]) nums[++a] = nums[b - 1];
+  return (a + 1);
+}
+
+int GetMaxListSize(const Graph &g) {
+  int res = 0;
+  for (const auto &list : g) {
+    res = max((int)list.size(), res);
+  }
+  return res;
+}
+
+int GetMaxListSize(int *list_size_dev, const int g_size) {
+  thrust::device_ptr<int> dev_ptr = thrust::device_pointer_cast(list_size_dev);
+  return *thrust::max_element(dev_ptr, dev_ptr + g_size);
+}
+
+__device__ NNDElement
+__shfl_down_sync(const int mask, NNDElement var, const int delta,
+                 const int width) {
+  NNDElement res;
+  res.distance_ = __shfl_down_sync(mask, var.distance_, delta, width);
+  res.label_ = __shfl_down_sync(mask, var.label_, delta, width);
+  return res;
+}
+
+__device__ NNDElement
+__shfl_up_sync(const int mask, NNDElement var, const int delta,
+               const int width) {
+  NNDElement res;
+  res.distance_ = __shfl_up_sync(mask, var.distance_, delta, width);
+  res.label_ = __shfl_up_sync(mask, var.label_, delta, width);
+  return res;
+}
+
+__device__ uint GetNthSetBitPos(uint mask, int nth) {
+  uint res;
+  asm("fns.b32 %0,%1,%2,%3;" : "=r"(res) : "r"(mask), "r"(0), "r"(nth));
+  return res;
 }
