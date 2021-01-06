@@ -35,10 +35,10 @@ void TestCUDANNDescent() {
   // string ground_truth_path
   //     = "/home/hwang//data/sift10k/sift10k_groundtruth_self.txt";
 
-  string base_path = "/home/hwang//data/sift100k/sift100k.txt";
-  string out_path = "/home/hwang/data/result/sift100k_knng_k64.txt";
-  string ground_truth_path =
-      "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
+  // string base_path = "/home/hwang//data/sift100k/sift100k.txt";
+  // string out_path = "/home/hwang/data/result/sift100k_knng_k64.txt";
+  // string ground_truth_path =
+  //     "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
 
   // string base_path = "/home/hwang/data/glove1m/glove1m_norm_base.txt";
   // string out_path = "/home/hwang/data/result/glove1m_knng_k64.txt";
@@ -56,6 +56,11 @@ void TestCUDANNDescent() {
   // string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
   // string ground_truth_path =
   //     "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
+
+  string base_path = "/home/hwang/data/glove100k/glove100k_norm_base.txt";
+  string out_path = "/home/hwang/data/result/glove100k_knng_k64.txt";
+  string ground_truth_path =
+      "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
 
   auto out = ofstream(out_path);
   if (!out.is_open()) {
@@ -111,6 +116,10 @@ void TestCUDAMerge() {
   string out_path = "/home/hwang/data/result/sift100k_knng_k64_merged.txt";
   string ground_truth_path =
       "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
+  // string base_path = "/home/hwang/data/glove100k/glove100k_norm_base.txt";
+  // string out_path = "/home/hwang/data/result/glove100k_knng_k64_merged.txt";
+  // string ground_truth_path =
+  //     "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
   float *vectors;
   int vecs_size, vecs_dim;
   FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);

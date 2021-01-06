@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <assert.h>
+#include <iomanip>
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
