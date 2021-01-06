@@ -35,10 +35,10 @@ void TestCUDANNDescent() {
   // string ground_truth_path
   //     = "/home/hwang//data/sift10k/sift10k_groundtruth_self.txt";
 
-  // string base_path = "/home/hwang//data/sift100k/sift100k.txt";
-  // string out_path = "/home/hwang/data/result/sift100k_knng_k64.txt";
-  // string ground_truth_path =
-  //     "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
+  string base_path = "/home/hwang//data/sift100k/sift100k.txt";
+  string out_path = "/home/hwang/data/result/sift100k_knng_k64.txt";
+  string ground_truth_path =
+      "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
 
   // string base_path = "/home/hwang/data/glove1m/glove1m_norm_base.txt";
   // string out_path = "/home/hwang/data/result/glove1m_knng_k64.txt";
@@ -57,10 +57,10 @@ void TestCUDANNDescent() {
   // string ground_truth_path =
   //     "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
 
-  string base_path = "/home/hwang/data/glove100k/glove100k_norm_base.txt";
-  string out_path = "/home/hwang/data/result/glove100k_knng_k64.txt";
-  string ground_truth_path =
-      "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
+  // string base_path = "/home/hwang/data/glove100k/glove100k_norm_base.txt";
+  // string out_path = "/home/hwang/data/result/glove100k_knng_k64.txt";
+  // string ground_truth_path =
+  //     "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
 
   auto out = ofstream(out_path);
   if (!out.is_open()) {
@@ -177,8 +177,8 @@ void TestCUDAMerge() {
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
-  // TestCUDANNDescent();
-  TestCUDAMerge();
+  TestCUDANNDescent();
+  // TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();
