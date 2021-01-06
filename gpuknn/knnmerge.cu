@@ -15,32 +15,31 @@
 using namespace std;
 
 __global__ void CopySecondHalfToKNNGraph(
-    NNDElement *knngraph, const int first_half_neighb_num,
-    const int second_half_neighb_num, const NNDElement *knngraph_first,
+    NNDElement *knngraph, const NNDElement *knngraph_first,
     const int knngraph_first_size, const NNDElement *knngraph_second,
     const int knngraph_second_size, const int *random_knngraph) {
   int list_id = blockIdx.x;
   int tx = threadIdx.x;
   int lane_id = tx % warpSize;
   int knngraph_base_pos = list_id * NEIGHB_NUM_PER_LIST;
-  int rand_knngraph_base_pos = list_id * second_half_neighb_num;
+  int rand_knngraph_base_pos = list_id * LAST_HALF_NEIGHB_NUM;
 
   if (list_id < knngraph_first_size) {
     if (tx < warpSize) {
-      int it_num = GetItNum(first_half_neighb_num, warpSize);
+      int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, warpSize);
       for (int i = 0; i < it_num; i++) {
         int neighb_pos = i * warpSize + lane_id;
-        if (neighb_pos >= first_half_neighb_num) break;
+        if (neighb_pos >= FIRST_HALF_NEIGHB_NUM) break;
         knngraph[knngraph_base_pos + neighb_pos] =
             knngraph_first[knngraph_base_pos + neighb_pos];
       }
     } else {
-      int it_num = GetItNum(second_half_neighb_num, warpSize);
+      int it_num = GetItNum(LAST_HALF_NEIGHB_NUM, warpSize);
       for (int i = 0; i < it_num; i++) {
         int neighb_pos = i * warpSize + lane_id;
-        if (neighb_pos >= second_half_neighb_num) break;
+        if (neighb_pos >= LAST_HALF_NEIGHB_NUM) break;
         auto &elem =
-            knngraph[knngraph_base_pos + first_half_neighb_num + neighb_pos];
+            knngraph[knngraph_base_pos + FIRST_HALF_NEIGHB_NUM + neighb_pos];
         elem.SetDistance(1e10);
         elem.SetLabel(random_knngraph[rand_knngraph_base_pos + neighb_pos] +
                       knngraph_first_size);
@@ -49,23 +48,23 @@ __global__ void CopySecondHalfToKNNGraph(
   } else {
     int knngraph_second_base_pos =
         (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
-    rand_knngraph_base_pos = (list_id - knngraph_first_size) * second_half_neighb_num;
+    rand_knngraph_base_pos = (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
     if (tx < warpSize) {
-      int it_num = GetItNum(first_half_neighb_num, warpSize);
+      int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, warpSize);
       for (int i = 0; i < it_num; i++) {
         int neighb_pos = i * warpSize + lane_id;
-        if (neighb_pos >= first_half_neighb_num) break;
+        if (neighb_pos >= FIRST_HALF_NEIGHB_NUM) break;
         auto elem = knngraph_second[knngraph_second_base_pos + neighb_pos];
         elem.SetLabel(elem.label() + knngraph_first_size);
         knngraph[knngraph_base_pos + neighb_pos] = elem;
       }
     } else {
-      int it_num = GetItNum(second_half_neighb_num, warpSize);
+      int it_num = GetItNum(LAST_HALF_NEIGHB_NUM, warpSize);
       for (int i = 0; i < it_num; i++) {
         int neighb_pos = i * warpSize + lane_id;
-        if (neighb_pos >= second_half_neighb_num) break;
+        if (neighb_pos >= LAST_HALF_NEIGHB_NUM) break;
         auto &elem =
-            knngraph[knngraph_base_pos + first_half_neighb_num + neighb_pos];
+            knngraph[knngraph_base_pos + FIRST_HALF_NEIGHB_NUM + neighb_pos];
         elem.SetDistance(1e10);
         elem.SetLabel(random_knngraph[rand_knngraph_base_pos + neighb_pos]);
       }
@@ -81,14 +80,13 @@ void PrepareGraphForMerge(NNDElement **knngraph_dev_ptr,
                           const int *random_knngraph_dev) {
   NNDElement *&knngraph_dev = *knngraph_dev_ptr;
   int merged_graph_size = knngraph_first_size + knngraph_second_size;
-  int second_half_neighb_num = NEIGHB_NUM_PER_LIST / 2;
-  int first_half_neighb_num = NEIGHB_NUM_PER_LIST - second_half_neighb_num;
+  int LAST_HALF_NEIGHB_NUM = NEIGHB_NUM_PER_LIST / 2;
+  int FIRST_HALF_NEIGHB_NUM = NEIGHB_NUM_PER_LIST - LAST_HALF_NEIGHB_NUM;
   cudaMalloc(&knngraph_dev, (size_t)merged_graph_size * NEIGHB_NUM_PER_LIST *
                                 sizeof(NNDElement));
   CopySecondHalfToKNNGraph<<<merged_graph_size, 32 * 2>>>(
-      knngraph_dev, first_half_neighb_num, second_half_neighb_num,
-      knngraph_first_dev, knngraph_first_size, knngraph_second_dev,
-      knngraph_second_size, random_knngraph_dev);
+      knngraph_dev, knngraph_first_dev, knngraph_first_size,
+      knngraph_second_dev, knngraph_second_size, random_knngraph_dev);
   cudaDeviceSynchronize();
   auto cuda_status = cudaGetLastError();
   if (cuda_status != cudaSuccess) {

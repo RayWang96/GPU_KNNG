@@ -177,8 +177,8 @@ void TestCUDAMerge() {
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
-  TestCUDANNDescent();
-  // TestCUDAMerge();
+  // TestCUDANNDescent();
+  TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();
