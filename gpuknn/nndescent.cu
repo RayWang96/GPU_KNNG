@@ -1431,7 +1431,7 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   NNDElement *knn_graph_dev;
   
   auto start = chrono::steady_clock::now();
-  NNDescent(&knn_graph_dev, vectors_dev, vecs_size, vecs_dim);
+  NNDescent(&knn_graph_dev, vectors_dev, vecs_size, vecs_dim, iteration);
   auto end = chrono::steady_clock::now();
   cerr << "GPU NNDescent costs: "
       << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
