@@ -42,7 +42,8 @@ void ToHostKNNGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
   delete[] knn_graph;
 }
 
-void OutputHostKNNGraph(const vector<vector<NNDElement>> &knn_graph, const string &out_path) {
+void OutputHostKNNGraph(const vector<vector<NNDElement>> &knn_graph,
+                        const string &out_path, const bool output_distance) {
   auto out = ofstream(out_path);
   if (!out.is_open()) {
     cerr << "Output file is not opened!" << endl;
@@ -53,9 +54,11 @@ void OutputHostKNNGraph(const vector<vector<NNDElement>> &knn_graph, const strin
     const auto &x = knn_graph[i];
     out << i << " " << x.size() << " ";
     for (auto y : x) {
-      // out << y.distance() << " " << y.label() << "\t";
+      if (output_distance)
+        out << y.distance() << " " << y.label() << "\t";
+      else
+        out << y.label() << "\t";
       // assert(y.label() != i);
-      out << y.label() << "\t";
     }
     out << endl;
   }

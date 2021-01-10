@@ -11,5 +11,6 @@ void ToHostKNNGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
                     const NNDElement *knn_graph_dev, const int size,
                     const int neighb_num);
 void OutputHostKNNGraph(const vector<vector<NNDElement>> &knn_graph,
-                        const string &out_path);
+                        const string &out_path,
+                        const bool output_distance = false);
 #endif

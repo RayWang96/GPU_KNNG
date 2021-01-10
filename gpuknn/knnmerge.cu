@@ -20,55 +20,154 @@ __global__ void CopySecondHalfToKNNGraph(
     const int knngraph_second_size, const int *random_knngraph) {
   int list_id = blockIdx.x;
   int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
-  int knngraph_base_pos = list_id * NEIGHB_NUM_PER_LIST;
-  int rand_knngraph_base_pos = list_id * LAST_HALF_NEIGHB_NUM;
+  int lane_id = tx % WARP_SIZE;
+  int knngraph_pos_base = list_id * NEIGHB_NUM_PER_LIST;
+  int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
 
   if (list_id < knngraph_first_size) {
-    if (tx < warpSize) {
-      int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, warpSize);
+    if (tx < WARP_SIZE) {
+      int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
       for (int i = 0; i < it_num; i++) {
-        int neighb_pos = i * warpSize + lane_id;
+        int neighb_pos = i * WARP_SIZE + lane_id;
         if (neighb_pos >= FIRST_HALF_NEIGHB_NUM) break;
-        knngraph[knngraph_base_pos + neighb_pos] =
-            knngraph_first[knngraph_base_pos + neighb_pos];
+        knngraph[knngraph_pos_base + neighb_pos] =
+            knngraph_first[knngraph_pos_base + neighb_pos];
       }
     } else {
-      int it_num = GetItNum(LAST_HALF_NEIGHB_NUM, warpSize);
+      int it_num = GetItNum(LAST_HALF_NEIGHB_NUM, WARP_SIZE);
       for (int i = 0; i < it_num; i++) {
-        int neighb_pos = i * warpSize + lane_id;
+        int neighb_pos = i * WARP_SIZE + lane_id;
         if (neighb_pos >= LAST_HALF_NEIGHB_NUM) break;
         auto &elem =
-            knngraph[knngraph_base_pos + FIRST_HALF_NEIGHB_NUM + neighb_pos];
+            knngraph[knngraph_pos_base + FIRST_HALF_NEIGHB_NUM + neighb_pos];
         elem.SetDistance(1e10);
-        elem.SetLabel(random_knngraph[rand_knngraph_base_pos + neighb_pos] +
+        elem.SetLabel(random_knngraph[rand_knngraph_pos_base + neighb_pos] +
                       knngraph_first_size);
       }
     }
   } else {
-    int knngraph_second_base_pos =
+    int knngraph_second_pos_base =
         (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
-    rand_knngraph_base_pos = (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
-    if (tx < warpSize) {
-      int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, warpSize);
+    rand_knngraph_pos_base = (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
+    if (tx < WARP_SIZE) {
+      int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
       for (int i = 0; i < it_num; i++) {
-        int neighb_pos = i * warpSize + lane_id;
+        int neighb_pos = i * WARP_SIZE + lane_id;
         if (neighb_pos >= FIRST_HALF_NEIGHB_NUM) break;
-        auto elem = knngraph_second[knngraph_second_base_pos + neighb_pos];
+        auto elem = knngraph_second[knngraph_second_pos_base + neighb_pos];
         elem.SetLabel(elem.label() + knngraph_first_size);
-        knngraph[knngraph_base_pos + neighb_pos] = elem;
+        knngraph[knngraph_pos_base + neighb_pos] = elem;
       }
     } else {
-      int it_num = GetItNum(LAST_HALF_NEIGHB_NUM, warpSize);
+      int it_num = GetItNum(LAST_HALF_NEIGHB_NUM, WARP_SIZE);
       for (int i = 0; i < it_num; i++) {
-        int neighb_pos = i * warpSize + lane_id;
+        int neighb_pos = i * WARP_SIZE + lane_id;
         if (neighb_pos >= LAST_HALF_NEIGHB_NUM) break;
         auto &elem =
-            knngraph[knngraph_base_pos + FIRST_HALF_NEIGHB_NUM + neighb_pos];
+            knngraph[knngraph_pos_base + FIRST_HALF_NEIGHB_NUM + neighb_pos];
         elem.SetDistance(1e10);
-        elem.SetLabel(random_knngraph[rand_knngraph_base_pos + neighb_pos]);
+        elem.SetLabel(random_knngraph[rand_knngraph_pos_base + neighb_pos]);
       }
     }
+  }
+}
+
+__global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
+                                          const NNDElement *knngraph_first,
+                                          const int knngraph_first_size,
+                                          const NNDElement *knngraph_second,
+                                          const int knngraph_second_size,
+                                          const int *random_knngraph) {
+  __shared__ NNDElement knnlist_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ int blocks_size[NEIGHB_BLOCKS_NUM];
+  __shared__ int current_block_id;
+  int list_id = blockIdx.x;
+  int global_pos_base = list_id * NEIGHB_NUM_PER_LIST;
+  int merged_size = knngraph_first_size + knngraph_second_size;
+  int tx = threadIdx.x;
+  if (tx < NEIGHB_BLOCKS_NUM) {
+    blocks_size[tx] = 0;
+  }
+
+  if (list_id < knngraph_first_size) {
+    int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
+    for (int i = 0; i < it_num; i++) {
+      int pos = i * WARP_SIZE + tx;
+      if (pos < FIRST_HALF_NEIGHB_NUM) {
+        NNDElement elem = knngraph_first[global_pos_base + pos];
+        int block_id = elem.label() % NEIGHB_BLOCKS_NUM;
+        int new_pos = atomicAdd(&blocks_size[block_id], 1);
+        if (new_pos >= WARP_SIZE) {
+          atomicExch(&blocks_size[block_id], WARP_SIZE);
+        } else {
+          knnlist_cache[block_id * WARP_SIZE + new_pos] = elem;
+        }
+      }
+    }
+  } else {
+    int knngraph_second_pos_base =
+        (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
+    int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
+    for (int i = 0; i < it_num; i++) {
+      int pos = i * WARP_SIZE + tx;
+      if (pos < FIRST_HALF_NEIGHB_NUM) {
+        NNDElement elem = knngraph_second[knngraph_second_pos_base + pos];
+        elem.SetLabel(elem.label() + knngraph_first_size);
+        elem.MarkOld();
+        int block_id = elem.label() % NEIGHB_BLOCKS_NUM;
+        int new_pos = atomicAdd(&blocks_size[block_id], 1);
+        if (new_pos >= WARP_SIZE) {
+          atomicExch(&blocks_size[block_id], WARP_SIZE);
+        } else {
+          knnlist_cache[block_id * WARP_SIZE + new_pos] = elem;
+        }
+      }
+    }
+  }
+  if (tx == 0) {
+    current_block_id = 0;
+  }
+  int used_num = 0;
+  for (int i = 0; i < NEIGHB_BLOCKS_NUM; i++) {
+    int it_num = GetItNum(LAST_HALF_NEIGHB_NUM - used_num, WARP_SIZE);
+    int tmp_used_num = used_num + (WARP_SIZE - blocks_size[i]);
+    for (int j = 0; j < it_num; j++) {
+      int pos = used_num + j * WARP_SIZE + tx;
+      if (pos >= LAST_HALF_NEIGHB_NUM) break;
+      int new_pos = atomicAdd(&blocks_size[i], 1);
+      if (new_pos >= WARP_SIZE) {
+        atomicExch(&blocks_size[i], WARP_SIZE);
+        break;
+      }
+      NNDElement elem(1e10, 12345678);
+      int new_label;
+      if (list_id < knngraph_first_size) {
+        int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
+        new_label = knngraph_first_size +
+                        random_knngraph[rand_knngraph_pos_base + pos] %
+                            knngraph_second_size;
+        while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
+          new_label = knngraph_first_size + (new_label + 1) % knngraph_second_size;
+        }
+      } else {
+        int rand_knngraph_pos_base =
+            (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
+        new_label =
+            random_knngraph[rand_knngraph_pos_base + pos] % knngraph_first_size;
+        while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
+          new_label = (new_label + 1) % knngraph_first_size;
+        }
+      }
+      elem.SetLabel(new_label);
+      knnlist_cache[i * WARP_SIZE + new_pos] = elem;
+    }
+    used_num = tmp_used_num;
+  }
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int pos = i * WARP_SIZE + tx;
+    if (pos < NEIGHB_NUM_PER_LIST)
+      knngraph[global_pos_base + pos] = knnlist_cache[pos];
   }
 }
 
@@ -80,14 +179,18 @@ void PrepareGraphForMerge(NNDElement **knngraph_dev_ptr,
                           const int *random_knngraph_dev) {
   NNDElement *&knngraph_dev = *knngraph_dev_ptr;
   int merged_graph_size = knngraph_first_size + knngraph_second_size;
-  int LAST_HALF_NEIGHB_NUM = NEIGHB_NUM_PER_LIST / 2;
-  int FIRST_HALF_NEIGHB_NUM = NEIGHB_NUM_PER_LIST - LAST_HALF_NEIGHB_NUM;
   cudaMalloc(&knngraph_dev, (size_t)merged_graph_size * NEIGHB_NUM_PER_LIST *
                                 sizeof(NNDElement));
-  CopySecondHalfToKNNGraph<<<merged_graph_size, 32 * 2>>>(
+  // CopySecondHalfToKNNGraph<<<merged_graph_size, WARP_SIZE * 2>>>(
+  //     knngraph_dev, knngraph_first_dev, knngraph_first_size,
+  //     knngraph_second_dev, knngraph_second_size, random_knngraph_dev);
+  InitRandomBlockedKNNGraph<<<merged_graph_size, WARP_SIZE>>>(
       knngraph_dev, knngraph_first_dev, knngraph_first_size,
       knngraph_second_dev, knngraph_second_size, random_knngraph_dev);
   cudaDeviceSynchronize();
+  // vector<vector<NNDElement>> g;
+  // ToHostKNNGraph(&g, knngraph_dev, merged_graph_size, NEIGHB_NUM_PER_LIST);
+  // OutputHostKNNGraph(g, "/home/hwang/codes/GPU_KNNG/results/tmpg.txt");
   auto cuda_status = cudaGetLastError();
   if (cuda_status != cudaSuccess) {
     cerr << cudaGetErrorString(cuda_status) << endl;
@@ -128,7 +231,7 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float **vectors_dev_ptr,
   if (!have_random_knngraph) {
     int random_knngraph_size = max(vectors_first_size, vectors_second_size);
     GenerateRandomKNNGraphIndex(&random_knngraph_dev, random_knngraph_size,
-                                NEIGHB_NUM_PER_LIST / 2);
+                                LAST_HALF_NEIGHB_NUM);
   }
   PrepareGraphForMerge(&knngraph_merged_dev, knngraph_first_dev,
                        vectors_first_size, knngraph_second_dev,
@@ -143,7 +246,7 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float **vectors_dev_ptr,
   cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
 
   NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
-                  6);
+                  5);
 
   if (!have_random_knngraph) {
     cudaFree(random_knngraph_dev);

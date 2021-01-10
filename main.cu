@@ -72,7 +72,7 @@ void TestCUDANNDescent() {
   int vecs_size, vecs_dim;
   FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
 
-  auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim);
+  auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim, 6);
 
   out << knn_graph.size() << " " << k << endl;
   for (int i = 0; i < knn_graph.size(); i++) {

@@ -54,9 +54,11 @@ __global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
     cache1_size = cache2_size = 0;
   }
   __syncthreads();
-  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, warpSize);
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
   for (int i = 0; i < it_num; i++) {
-    int local_pos = i * warpSize + tx;
+    int nth = i * WARP_SIZE + tx;
+    int local_pos =
+        nth % NEIGHB_BLOCKS_NUM * WARP_SIZE + nth / NEIGHB_BLOCKS_NUM;
     if (local_pos < NEIGHB_NUM_PER_LIST) {
       NNDElement elem = knn_graph[knng_base_pos + local_pos];
       if (elem.IsNew()) {
@@ -78,9 +80,9 @@ __global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
     newg_list_size_dev[list_id] = cache1_size;
     oldg_list_size_dev[list_id] = cache2_size;
   }
-  it_num = GetItNum(SAMPLE_NUM, warpSize);
+  it_num = GetItNum(SAMPLE_NUM, WARP_SIZE);
   for (int i = 0; i < it_num; i++) {
-    int local_pos = i * warpSize + tx;
+    int local_pos = i * WARP_SIZE + tx;
     if (local_pos < cache1_size) {
       graph_new_dev[nn_list_base_pos + local_pos] =
           new_elements_cache[local_pos];
@@ -111,14 +113,14 @@ __device__ void InsertSort(T *a, const int length) {
 
 __device__ __forceinline__ NNDElement XorSwap(NNDElement x, int mask, int dir) {
   NNDElement y;
-  y.distance_ = __shfl_xor_sync(FULL_MASK, x.distance_, mask, warpSize);
-  y.label_ = __shfl_xor_sync(FULL_MASK, x.label_, mask, warpSize);
+  y.distance_ = __shfl_xor_sync(FULL_MASK, x.distance_, mask, WARP_SIZE);
+  y.label_ = __shfl_xor_sync(FULL_MASK, x.label_, mask, WARP_SIZE);
   return x < y == dir ? y : x;
 }
 
 __device__ __forceinline__ int XorSwap(int x, int mask, int dir) {
   int y;
-  y = __shfl_xor_sync(FULL_MASK, x, mask, warpSize);
+  y = __shfl_xor_sync(FULL_MASK, x, mask, WARP_SIZE);
   return x < y == dir ? y : x;
 }
 
@@ -203,9 +205,9 @@ __global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
     cache2_size = oldg_list_size_dev[list_id];
   }
   __syncthreads();
-  int it_num = GetItNum(SAMPLE_NUM, warpSize);
+  int it_num = GetItNum(SAMPLE_NUM, WARP_SIZE);
   for (int i = 0; i < it_num; i++) {
-    int local_pos = i * warpSize + tx;
+    int local_pos = i * WARP_SIZE + tx;
     if (local_pos < cache1_size) {
       new_elements_cache[local_pos] =
           graph_new_dev[nn_list_base_pos + local_pos];
@@ -216,9 +218,9 @@ __global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
     }
   }
   __syncthreads();
-  it_num = GetItNum(SAMPLE_NUM, warpSize);
+  it_num = GetItNum(SAMPLE_NUM, WARP_SIZE);
   for (int i = 0; i < it_num; i++) {
-    int local_pos = i * warpSize + tx;
+    int local_pos = i * WARP_SIZE + tx;
     if (local_pos < cache1_size) {
       int rev_list_id = new_elements_cache[local_pos];
       int pos = SAMPLE_NUM;
@@ -254,7 +256,7 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
   int tx = threadIdx.x;
   int list_id = blockIdx.x;
   int nn_list_base_pos = list_id * (SAMPLE_NUM * 2);
-  int lane_id = tx % warpSize;
+  int lane_id = tx % WARP_SIZE;
 
   if (tx == 0) {
     newg_list_size = newg_list_size_dev[list_id];
@@ -263,10 +265,10 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     oldg_revlist_size = oldg_revlist_size_dev[list_id];
   }
   __syncthreads();
-  int it_num = GetItNum(SAMPLE_NUM * 2, warpSize);
+  int it_num = GetItNum(SAMPLE_NUM * 2, WARP_SIZE);
   int list_new_size = 0, list_old_size = 0;
   for (int i = 0; i < it_num; i++) {
-    int local_pos = i * warpSize + tx;
+    int local_pos = i * WARP_SIZE + tx;
 
     int sort_elem = LARGE_INT;
     if ((local_pos < newg_list_size) ||
@@ -279,12 +281,12 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     if (lane_id == 0) {
       list_new_size =
           MergeList(new_elements_cache, list_new_size, sorted_elements_cache,
-                    warpSize, merged_list_cache);
+                    WARP_SIZE, merged_list_cache);
     }
     list_new_size = __shfl_sync(FULL_MASK, list_new_size, 0);
-    int copy_it_num = GetItNum(list_new_size, warpSize);
+    int copy_it_num = GetItNum(list_new_size, WARP_SIZE);
     for (int j = 0; j < copy_it_num; j++) {
-      int pos = j * warpSize + lane_id;
+      int pos = j * WARP_SIZE + lane_id;
       if (pos >= SAMPLE_NUM * 2) break;
       new_elements_cache[pos] = merged_list_cache[pos];
     }
@@ -300,12 +302,12 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     if (lane_id == 0) {
       list_old_size =
           MergeList(old_elements_cache, list_old_size, sorted_elements_cache,
-                    warpSize, merged_list_cache);
+                    WARP_SIZE, merged_list_cache);
     }
     list_old_size = __shfl_sync(FULL_MASK, list_old_size, 0);
-    copy_it_num = GetItNum(list_old_size, warpSize);
+    copy_it_num = GetItNum(list_old_size, WARP_SIZE);
     for (int j = 0; j < copy_it_num; j++) {
-      int pos = j * warpSize + lane_id;
+      int pos = j * WARP_SIZE + lane_id;
       if (pos >= SAMPLE_NUM * 2) break;
       old_elements_cache[pos] = merged_list_cache[pos];
     }
@@ -333,9 +335,9 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     newg_list_size = pos;
   }
   __syncthreads();
-  it_num = GetItNum(SAMPLE_NUM * 2, warpSize);
+  it_num = GetItNum(SAMPLE_NUM * 2, WARP_SIZE);
   for (int i = 0; i < it_num; i++) {
-    int local_pos = i * warpSize + tx;
+    int local_pos = i * WARP_SIZE + tx;
     if (local_pos < newg_list_size) {
       graph_new_dev[nn_list_base_pos + local_pos] =
           new_elements_cache[local_pos];
@@ -501,7 +503,7 @@ void GetTestGraph(Graph *graph_new_ptr, Graph *graph_old_ptr,
 
 __device__ __forceinline__ NNDElement
 __shfl_down_sync(const int mask, NNDElement var, const int delta,
-                 const int width = warpSize) {
+                 const int width = WARP_SIZE) {
   NNDElement res;
   res.distance_ = __shfl_down_sync(mask, var.distance_, delta, width);
   res.label_ = __shfl_down_sync(mask, var.label_, delta, width);
@@ -510,7 +512,7 @@ __shfl_down_sync(const int mask, NNDElement var, const int delta,
 
 __device__ __forceinline__ NNDElement
 __shfl_up_sync(const int mask, NNDElement var, const int delta,
-               const int width = warpSize) {
+               const int width = WARP_SIZE) {
   NNDElement res;
   res.distance_ = __shfl_up_sync(mask, var.distance_, delta, width);
   res.label_ = __shfl_up_sync(mask, var.label_, delta, width);
@@ -530,20 +532,20 @@ __device__ NNDElement GetMinElement(const int *neighbs_id, const int list_id,
   int y_num = tail_pos - head_pos;
 
   int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
+  int lane_id = tx % WARP_SIZE;
   NNDElement min_elem = NNDElement(1e10, LARGE_INT);
 
-  int it_num = GetItNum(y_num, warpSize);
+  int it_num = GetItNum(y_num, WARP_SIZE);
   for (int it = 0; it < it_num; it++) {
     NNDElement elem;
-    elem.SetLabel(neighbs_id[it * warpSize + lane_id]);
-    int current_pos = head_pos + it * warpSize + lane_id;
+    elem.SetLabel(neighbs_id[it * WARP_SIZE + lane_id]);
+    int current_pos = head_pos + it * WARP_SIZE + lane_id;
     if (current_pos < tail_pos) {
       elem.SetDistance(distances[current_pos]);
     } else {
       elem = NNDElement(1e10, LARGE_INT);
     }
-    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
     if (lane_id == 0) {
       min_elem = Min(elem, min_elem);
@@ -553,7 +555,7 @@ __device__ NNDElement GetMinElement(const int *neighbs_id, const int list_id,
   head_pos = list_id * (list_id + 3) / 2;  // 0   2   5   9   14
   for (int it = 0; it < 2; it++) {
     NNDElement elem;
-    int no = it * warpSize + lane_id;
+    int no = it * WARP_SIZE + lane_id;
     elem.SetLabel(neighbs_id[no + list_id + 1]);
     int current_pos = head_pos + no * (no + list_id * 2 + 1) / 2;
     if (current_pos < distances_num) {
@@ -561,7 +563,7 @@ __device__ NNDElement GetMinElement(const int *neighbs_id, const int list_id,
     } else {
       elem = NNDElement(1e10, LARGE_INT);
     }
-    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
     if (lane_id == 0) {
       min_elem = Min(elem, min_elem);
@@ -579,13 +581,13 @@ __device__ NNDElement GetMinElement2(const int list_id, const int list_size,
   int tail_pos = head_pos + num_old;
 
   int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
+  int lane_id = tx % WARP_SIZE;
   NNDElement min_elem = NNDElement(1e10, LARGE_INT);
 
-  int it_num = GetItNum(y_num, warpSize);
+  int it_num = GetItNum(y_num, WARP_SIZE);
   for (int it = 0; it < it_num; it++) {
     NNDElement elem;
-    int no = it * warpSize + lane_id;
+    int no = it * WARP_SIZE + lane_id;
     elem.SetLabel(old_neighbs[no]);
     int current_pos = head_pos + no;
     if (current_pos < tail_pos) {
@@ -593,7 +595,7 @@ __device__ NNDElement GetMinElement2(const int list_id, const int list_size,
     } else {
       elem = NNDElement(1e10, LARGE_INT);
     }
-    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
     if (lane_id == 0) {
       min_elem = Min(elem, min_elem);
@@ -610,13 +612,13 @@ __device__ NNDElement GetMinElement3(const int list_id, const int list_size,
                                      const float *vectors) {
   int head_pos = list_id - num_new;
   int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
+  int lane_id = tx % WARP_SIZE;
   NNDElement min_elem = NNDElement(1e10, LARGE_INT);
 
-  int it_num = GetItNum(num_new, warpSize);
+  int it_num = GetItNum(num_new, WARP_SIZE);
   for (int it = 0; it < it_num; it++) {
     NNDElement elem;
-    int no = it * warpSize + lane_id;
+    int no = it * WARP_SIZE + lane_id;
     elem.SetLabel(new_neighbs[no]);
     int current_pos = head_pos + no * num_old;
     if (current_pos < distances_num) {
@@ -624,7 +626,7 @@ __device__ NNDElement GetMinElement3(const int list_id, const int list_size,
     } else {
       elem = NNDElement(1e10, LARGE_INT);
     }
-    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
       elem = Min(elem, __shfl_down_sync(FULL_MASK, elem, offset));
     if (lane_id == 0) {
       min_elem = Min(elem, min_elem);
@@ -644,61 +646,57 @@ __device__ void InsertToGlobalGraph(NNDElement elem, const int local_id,
                                     NNDElement *global_knn_graph,
                                     int *global_locks) {
   int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
+  int lane_id = tx % WARP_SIZE;
   int global_pos_base = global_id * NEIGHB_NUM_PER_LIST;
   elem.distance_ = __shfl_sync(FULL_MASK, elem.distance_, 0);
   elem.label_ = __shfl_sync(FULL_MASK, elem.label_, 0);
   int loop_flag = 0;
   do {
+    int block_id = elem.label() % NEIGHB_BLOCKS_NUM;
     if (lane_id == 0)
-      loop_flag = atomicCAS(&global_locks[global_id], 0, 1) == 0;
+      loop_flag =
+          atomicCAS(&global_locks[global_id * NEIGHB_BLOCKS_NUM + block_id], 0,
+                    1) == 0;
     loop_flag = __shfl_sync(FULL_MASK, loop_flag, 0);
     if (loop_flag == 1) {
-      NNDElement knn_list_frag[INSERT_IT_NUM];
-      for (int i = 0; i < INSERT_IT_NUM; i++) {
-        int local_pos = i * warpSize + lane_id;
-        int global_pos = global_pos_base + local_pos;
-        if (local_pos < NEIGHB_NUM_PER_LIST)
-          knn_list_frag[i] = global_knn_graph[global_pos];
-        else
-          knn_list_frag[i] = NNDElement(1e10, LARGE_INT);
-      }
+      NNDElement knn_list_frag;
+      int local_pos = block_id * WARP_SIZE + lane_id;
+      int global_pos = global_pos_base + local_pos;
+      if (local_pos < NEIGHB_NUM_PER_LIST)
+        knn_list_frag = global_knn_graph[global_pos];
+      else
+        knn_list_frag = NNDElement(1e10, LARGE_INT);
 
       int pos_to_insert = -1;
-      for (int i = 0; i < INSERT_IT_NUM; i++) {
-        NNDElement prev_elem = __shfl_up_sync(FULL_MASK, knn_list_frag[i], 1);
-        if (lane_id == 0) prev_elem = NNDElement(-1e10, -LARGE_INT);
-        if (elem > prev_elem && elem < knn_list_frag[i])
-          pos_to_insert = i * warpSize + lane_id;
-        else if (elem == prev_elem || elem == knn_list_frag[i])
-          pos_to_insert = -2;
-        if (__ballot_sync(FULL_MASK, pos_to_insert == -2)) break;
-        uint mask = __ballot_sync(FULL_MASK, pos_to_insert >= 0);
-        if (mask) {
-          uint set_lane_id = GetNthSetBitPos(mask, 1);
-          pos_to_insert = __shfl_sync(FULL_MASK, pos_to_insert, set_lane_id);
-          // assert(false);
-          break;
-        }
+      NNDElement prev_elem = __shfl_up_sync(FULL_MASK, knn_list_frag, 1);
+      if (lane_id == 0) prev_elem = NNDElement(-1e10, -LARGE_INT);
+      if (elem > prev_elem && elem < knn_list_frag)
+        pos_to_insert = block_id * WARP_SIZE + lane_id;
+      else if (elem == prev_elem || elem == knn_list_frag)
+        pos_to_insert = -2;
+      uint mask = __ballot_sync(FULL_MASK, pos_to_insert >= 0);
+      if (mask) {
+        uint set_lane_id = GetNthSetBitPos(mask, 1);
+        pos_to_insert = __shfl_sync(FULL_MASK, pos_to_insert, set_lane_id);
+        // assert(false);
       }
       if (pos_to_insert >= 0) {
-        for (int i = 0; i < INSERT_IT_NUM; i++) {
-          int local_pos = i * warpSize + lane_id;
-          if (local_pos > pos_to_insert) {
-            local_pos++;
-          } else if (local_pos == pos_to_insert) {
-            global_knn_graph[global_pos_base + local_pos] = elem;
-            local_pos++;
-          }
-          int global_pos = global_pos_base + local_pos;
-          if (local_pos < NEIGHB_NUM_PER_LIST)
-            global_knn_graph[global_pos] = knn_list_frag[i];
+        int local_pos = block_id * WARP_SIZE + lane_id;
+        if (local_pos > pos_to_insert) {
+          local_pos++;
+        } else if (local_pos == pos_to_insert) {
+          global_knn_graph[global_pos_base + local_pos] = elem;
+          local_pos++;
         }
+        int global_pos = global_pos_base + local_pos;
+        if (local_pos < (block_id + 1) * WARP_SIZE &&
+            local_pos < NEIGHB_NUM_PER_LIST)
+          global_knn_graph[global_pos] = knn_list_frag;
       }
     }
     __threadfence();
     if (loop_flag && lane_id == 0) {
-      atomicExch(&global_locks[global_id], 0);
+      atomicExch(&global_locks[global_id * NEIGHB_BLOCKS_NUM + block_id], 0);
     }
     __nanosleep(32);
   } while (!loop_flag);
@@ -772,9 +770,9 @@ __global__ void NewNeighborsCompareKernel(
   // num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
 
   int list_size = NEIGHB_CACHE_NUM;
-  int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
+  int num_it3 = GetItNum(neighb_num, block_dim_x / WARP_SIZE);
   for (int j = 0; j < num_it3; j++) {
-    int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
+    int list_id = j * (block_dim_x / WARP_SIZE) + tx / WARP_SIZE;
     if (list_id >= neighb_num) continue;
     NNDElement min_elem =
         GetMinElement(neighbors, list_id, list_size, distances, calc_num);
@@ -887,9 +885,9 @@ __global__ void TiledNewOldNeighborsCompareKernel(
 
   // Read list to cache
   int list_size = NEIGHB_CACHE_NUM;
-  int num_it3 = GetItNum(neighb_num, block_dim_x / warpSize);
+  int num_it3 = GetItNum(neighb_num, block_dim_x / WARP_SIZE);
   for (int j = 0; j < num_it3; j++) {
-    int list_id = j * (block_dim_x / warpSize) + tx / warpSize;
+    int list_id = j * (block_dim_x / WARP_SIZE) + tx / WARP_SIZE;
     if (list_id >= neighb_num) continue;
     NNDElement min_elem(1e10, LARGE_INT);
     if (list_id < num_new) {
@@ -1011,8 +1009,8 @@ float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
   cudaError_t cuda_status;
 
   int *global_locks_dev;
-  cudaMalloc(&global_locks_dev, g_size * sizeof(int));
-  cudaMemset(global_locks_dev, 0, g_size * sizeof(int));
+  cudaMalloc(&global_locks_dev, g_size * sizeof(int) * NEIGHB_BLOCKS_NUM);
+  cudaMemset(global_locks_dev, 0, g_size * sizeof(int) * NEIGHB_BLOCKS_NUM);
   cuda_status = cudaGetLastError();
 
   if (cuda_status != cudaSuccess) {
@@ -1107,9 +1105,13 @@ __global__ void InitKNNGraphIndexKernel(
   int list_id = blockIdx.x;
   int tx = threadIdx.x;
   int pos = list_id * NEIGHB_NUM_PER_LIST + tx;
+  int block_id = tx / WARP_SIZE;
+
   knn_graph[pos].SetDistance(1e10);
   int label = random_sequence[pos] % (unsigned long long)graph_size;
-  if (label == list_id) label++;
+  while (label % NEIGHB_BLOCKS_NUM != block_id || label == list_id) {
+    label = (label + 1) % (unsigned long long)graph_size;
+  }
   knn_graph[pos].SetLabel(label);
 }
 
@@ -1118,7 +1120,7 @@ __global__ void InitKNNGraphDistanceKernel(NNDElement *knn_graph,
                                            const float *vectors) {
   int list_id = blockIdx.x;
   int tx = threadIdx.x;
-  int lane_id = threadIdx.x % warpSize;
+  int lane_id = threadIdx.x % WARP_SIZE;
   int vec_a_pos = list_id * VEC_DIM;
 
   for (int i = 0; i < NEIGHB_NUM_PER_LIST; i++) {
@@ -1137,7 +1139,7 @@ __global__ void InitKNNGraphDistanceKernel(NNDElement *knn_graph,
       } else {
         diff = 0;
       }
-      for (int offset = warpSize / 2; offset > 0; offset /= 2)
+      for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
         diff = diff + __shfl_down_sync(FULL_MASK, diff, offset);
       sum += diff;
     }
@@ -1147,6 +1149,30 @@ __global__ void InitKNNGraphDistanceKernel(NNDElement *knn_graph,
   }
 }
 
+__global__ void SortEachBlockKernel(NNDElement *knn_graph,
+                                    const int graph_size) {
+  int list_id = blockIdx.x;
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
+  int global_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  int tx = threadIdx.x;
+  int lane_id = tx % WARP_SIZE;
+  int block_id = tx / WARP_SIZE;  
+
+  NNDElement elem;
+  int pos = block_id * WARP_SIZE + lane_id;
+  if (pos < NEIGHB_NUM_PER_LIST) {
+    elem = knn_graph[global_base_pos + pos];
+  } else {
+    elem.SetDistance(1e10);
+    elem.SetLabel(LARGE_INT);
+  }
+  BitonicSort(&elem, lane_id);
+  if (pos < NEIGHB_NUM_PER_LIST) {
+    knn_graph[global_base_pos + pos] = elem;
+  }
+  return;
+}
+
 __global__ void SortKNNGraphKernel(NNDElement *knn_graph,
                                    const int graph_size) {
   __shared__ NNDElement knn_list_cache[NEIGHB_NUM_PER_LIST];
@@ -1154,19 +1180,19 @@ __global__ void SortKNNGraphKernel(NNDElement *knn_graph,
   __shared__ NNDElement merged_list_cache[NEIGHB_NUM_PER_LIST];
 
   int list_id = blockIdx.x;
-  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, warpSize);
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
   int global_base_pos = list_id * NEIGHB_NUM_PER_LIST;
   int tx = threadIdx.x;
-  int lane_id = tx % warpSize;
+  int lane_id = tx % WARP_SIZE;
   int list_size = 0;
   for (int i = 0; i < it_num; i++) {
-    int pos = i * warpSize + tx;
+    int pos = i * WARP_SIZE + tx;
     if (pos >= NEIGHB_NUM_PER_LIST) break;
     merged_list_cache[pos] = knn_list_cache[pos] = NNDElement(1e10, LARGE_INT);
   }
   for (int i = 0; i < it_num; i++) {
     NNDElement elem;
-    int pos = i * warpSize + tx;
+    int pos = i * WARP_SIZE + tx;
     if (pos >= NEIGHB_NUM_PER_LIST) {
       elem.SetDistance(1e10);
       elem.SetLabel(LARGE_INT);
@@ -1177,19 +1203,19 @@ __global__ void SortKNNGraphKernel(NNDElement *knn_graph,
     sorted_elements_cache[lane_id] = elem;
     if (lane_id == 0) {
       list_size = MergeList(knn_list_cache, list_size, sorted_elements_cache,
-                            warpSize, merged_list_cache);
+                            WARP_SIZE, merged_list_cache);
     }
     list_size = __shfl_sync(FULL_MASK, list_size, 0);
-    int copy_it_num = GetItNum(list_size, warpSize);
+    int copy_it_num = GetItNum(list_size, WARP_SIZE);
     for (int j = 0; j < copy_it_num; j++) {
-      int pos = j * warpSize + lane_id;
+      int pos = j * WARP_SIZE + lane_id;
       if (pos >= NEIGHB_NUM_PER_LIST) break;
       knn_list_cache[pos] = merged_list_cache[pos];
     }
   }
   __syncthreads();
   for (int i = 0; i < it_num; i++) {
-    int pos = i * warpSize + tx;
+    int pos = i * WARP_SIZE + tx;
     if (pos >= NEIGHB_NUM_PER_LIST) break;
     knn_graph[global_base_pos + pos] = knn_list_cache[pos];
   }
@@ -1233,7 +1259,9 @@ void InitRandomKNNGraph(NNDElement *knn_graph_dev, const int graph_size,
     cerr << "InitKNNGraphDistanceKernel failed." << endl;
     exit(-1);
   }
-  SortKNNGraphKernel<<<graph_size, 32>>>(knn_graph_dev, graph_size);
+  SortEachBlockKernel<<<graph_size, WARP_SIZE * NEIGHB_BLOCKS_NUM>>>(
+      knn_graph_dev, graph_size);
+  // SortKNNGraphKernel<<<graph_size, 32>>>(knn_graph_dev, graph_size);
   cudaDeviceSynchronize();
   auto end = chrono::steady_clock().now();
 
@@ -1248,6 +1276,41 @@ void InitRandomKNNGraph(NNDElement *knn_graph_dev, const int graph_size,
                   .count() /
               1e6
        << endl;
+}
+
+__global__ void MergeBlocksKernel(NNDElement *knn_graph, const int graph_size) {
+  __shared__ NNDElement c_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ NNDElement tmp_cache[NEIGHB_NUM_PER_LIST];
+  int list_id = blockIdx.x;
+  int global_pos_base = list_id * NEIGHB_NUM_PER_LIST;
+  int tx = threadIdx.x;
+  int list_size = 0;
+  c_cache[tx] = knn_graph[global_pos_base + tx];
+  list_size = WARP_SIZE;
+  for (int i = 1; i < NEIGHB_BLOCKS_NUM; i++) {
+    list_size =
+        MergeList(c_cache, list_size, &knn_graph[global_pos_base + i * WARP_SIZE],
+                  WARP_SIZE, tmp_cache);
+    int it_num = GetItNum(list_size, WARP_SIZE);
+    for (int j = 0; j < it_num; j++) {
+      int pos = j * WARP_SIZE + tx;
+      if (pos < list_size) {
+        c_cache[pos] = tmp_cache[pos];
+      }
+    }
+  }
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int pos = i * WARP_SIZE + tx;
+    if (pos < NEIGHB_NUM_PER_LIST) {
+      knn_graph[global_pos_base + pos] = c_cache[pos];
+    }
+  }
+}
+
+void MergeBlocksInNNLists(NNDElement *knn_graph, const int graph_size) {
+  MergeBlocksKernel<<<graph_size, WARP_SIZE>>> (knn_graph, graph_size);
+  cudaDeviceSynchronize();
 }
 
 namespace gpuknn {
@@ -1309,6 +1372,7 @@ void NNDescentRefine(NNDElement *knngraph_dev,
     cerr << "Kernel costs " << tmp_kernel_costs << endl;
     cerr << endl;
   }
+  MergeBlocksInNNLists(knngraph_dev, graph_size);
   auto sum_end = chrono::steady_clock::now();
   float sum_costs = (float)chrono::duration_cast<std::chrono::microseconds>(
                         sum_end - sum_start)
@@ -1398,6 +1462,7 @@ void NNDescent(NNDElement **knngraph_result_dev_ptr, const float *vectors_dev,
     cerr << "Kernel costs " << tmp_kernel_costs << endl;
     cerr << endl;
   }
+  MergeBlocksInNNLists(knngraph_result_dev, graph_size);
   auto sum_end = chrono::steady_clock::now();
   float sum_costs = (float)chrono::duration_cast<std::chrono::microseconds>(
                         sum_end - sum_start)

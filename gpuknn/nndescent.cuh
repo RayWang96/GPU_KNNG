@@ -8,8 +8,12 @@ using namespace xmuknn;
 #define LARGE_INT 0x3f3f3f3f
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 64;
-const int INSERT_IT_NUM =
+
+const int WARP_SIZE = 32;
+const int NEIGHB_BLOCKS_NUM =
     NEIGHB_NUM_PER_LIST / 32 + (NEIGHB_NUM_PER_LIST % 32 != 0);
+// const int INSERT_IT_NUM =
+//     NEIGHB_NUM_PER_LIST / 32 + (NEIGHB_NUM_PER_LIST % 32 != 0);
 const int NEIGHB_CACHE_NUM = 1;
 const int TILE_WIDTH = 16;
 const int SKEW_TILE_WIDTH = TILE_WIDTH + 1;
