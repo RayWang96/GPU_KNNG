@@ -13,4 +13,6 @@ void ToHostKNNGraph(vector<vector<NNDElement>> *origin_knn_graph_ptr,
 void OutputHostKNNGraph(const vector<vector<NNDElement>> &knn_graph,
                         const string &out_path,
                         const bool output_distance = false);
+size_t PredPeakGPUMemory(const int vecs_num, const int vecs_dim, const int k,
+                       const int sample_num);
 #endif

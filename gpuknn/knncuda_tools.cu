@@ -93,3 +93,21 @@ void GenerateRandomKNNGraphIndex(int **knn_graph_index_ptr, const int graph_size
     exit(-1);
   }
 }
+
+size_t PredPeakGPUMemory(const int vecs_num, const int vecs_dim, const int k,
+                         const int sample_num) {
+  size_t nndescent_mem_cost =
+      (size_t)vecs_num * vecs_dim * sizeof(float) + 
+      (size_t)vecs_num * (sample_num * 2) * sizeof(int) +
+      (size_t)vecs_num * sizeof(int) + 
+      (size_t)vecs_num * sizeof(int) +
+      (size_t)vecs_num * (sample_num * 2) * sizeof(int) + 
+      (size_t)vecs_num * sizeof(int) + 
+      (size_t)vecs_num * sizeof(int) +
+      (size_t)vecs_num * k * sizeof(NNDElement) +
+      max((size_t)vecs_num * k * sizeof(long long),  //random_sequence
+         (size_t)vecs_num * (k / 32 + (k % 32 != 0)) * sizeof(int)) +//locks
+      0;
+  cout << "NNDescent GPU memory costs: " << nndescent_mem_cost / 1024 << " KB" << endl;
+  return nndescent_mem_cost;
+}

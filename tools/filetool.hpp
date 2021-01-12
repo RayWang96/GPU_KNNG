@@ -4,160 +4,137 @@
 #include <iostream>
 #include <string>
 #include <vector>
+using namespace std;
 
 namespace xmuknn {
 class FileTool {
-   public:
-    static void GetFilePath(std::string &file_path) {
-        //file_path = "D:/KNNDatasets/siftsmall_txt/siftsmall_base.txt";
-        //file_path = "D:/KNNDatasets/sift100k/sift100k.txt";
-        //file_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift_base.txt";
-        //file_path = "/mnt/d/Codes/KNN_Demos/datasets/rand100k/rand100k4d.txt";
-        //file_path = "/mnt/d/Codes/KNN_Demos/datasets/glove100k/glove100k.txt";
-        //file_path = "C:/KNNDatasets/gist100k/gist100k_base.txt";
-        file_path = "D:/KNNDatasets/rand1m/rand1m100d.txt";
-        //file_path = "D:/KNNDatasets/rand10k/rand10k.txt";
+ public:
+  static void ReadFVecs(const string &data_path, float **vectors_ptr,
+                        int *num_ptr, int *dim_ptr, int read_num = -1) {
+    float *&vectors = *vectors_ptr;
+    int &num = *num_ptr;
+    int &dim = *dim_ptr;
+    ifstream in(data_path, ios::binary);
+    if (!in.is_open()) {
+      cerr << "Can't open " << data_path << endl;
+      exit(-1);
     }
-    static std::string GetFilePath() {
-        std::string file_path;
-        //file_path = "D:/KNNDatasets/siftsmall_txt/siftsmall_base.txt";
-        //file_path = "D:/KNNDatasets/sift100k/sift100k.txt";
-        //file_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift_base.txt";
-        //file_path = "./datasets/sift1m/sift_base.txt";
-        //file_path = "/mnt/d/Codes/KNN_Demos/datasets/rand100k/rand100k4d.txt";
-        //file_path = "/mnt/d/Codes/KNN_Demos/datasets/glove100k/glove100k.txt";
-        //file_path = "C:/KNNDatasets/gist100k/gist100k_base.txt";
-        file_path = "D:/KNNDatasets/rand1m/rand1m100d.txt";
-        //file_path = "D:/KNNDatasets/rand10k/rand10k.txt";
-        return file_path;
+    in.read((char *)&dim, 4);
+    if (read_num == -1) {
+      in.seekg(0, ios::end);
+      ios::pos_type file_tail_pos = in.tellg();
+      size_t file_size = (size_t)file_tail_pos;
+      read_num = file_size / (size_t)(dim + 1) / 4;
     }
-
-    static std::string GetOutPath() {
-        return std::string("D:/KNNDatasets/out.txt");
+    in.seekg(0, ios::beg);
+    num = read_num;
+    vectors = new float[(size_t)read_num * (size_t)dim];
+    int tmp = 0;
+    for (int i = 0; i < read_num; i++) {
+      in.read((char *)&tmp, 4);
+      in.read((char *)(vectors + (size_t)i * dim), dim * 4);
     }
-    static void GetOutPath(std::string &out_path) { out_path = "D:/KNNDatasets/out.txt"; }
+    in.close();
+  }
 
-    static void GetGraphPath(std::string &graph_path) {
-        //graph_path =
-        //    "D:/KNNDatasets/siftsmall_txt/"
-        //    "siftsmall_knn_graph_r.txt";
-        
-        //graph_path =
-        //    "D:/KNNDatasets/sift100k/"
-        //    "sift100k_knn_graph_r.txt";
-
-        // graph_path =
-        //     "/mnt/d/Codes/KNN_Demos/datasets/sift100k/"
-        //     "sift100k_dpg.txt";
-
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift1m_gold_knn40.txt";
-
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift1m_dpg2.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/gist100k/gist100k_k40_graph.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/gist100k/gist100k_dpg.txt";
-        graph_path = "D:/KNNDatasets/rand1m/rand1m100d_knn_graph_r.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/rand1m/rand1m100d_dpg0.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/rand1m/rand1m100d_dpg2_k20.txt";
-        //graph_path = "D:/KNNDatasets/rand10k/rand10k_knn_graph.txt";
+  static void WriteFVecs(const string &data_path, const float *vectors,
+                         const int num, const int dim) {
+    ofstream out(data_path, ios::binary);
+    for (int i = 0; i < num; i++) {
+      out.write((char*)&dim, 4);
+      out.write((char*)vectors, dim * 4);
     }
-    static std::string GetGraphPath() {
-        // std::string out_path = "./datasets/sift1m/sift1m_gold_knn40.txt";
-        std::string graph_path;
-        //graph_path =
-        //    "D:/KNNDatasets/siftsmall_txt/"
-        //    "siftsmall_knn_graph_r.txt";
-        
-        //graph_path =
-        //    "D:/KNNDatasets/sift100k/"
-        //    "sift100k_knn_graph_r.txt";
+    out.close();
+  }
 
-        // graph_path =
-        //     "/mnt/d/Codes/KNN_Demos/datasets/sift100k/"
-        //     "sift100k_dpg.txt";
-        
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift1m_gold_knn40.txt";
-
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift1m_dpg2.txt";
-
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/gist100k/gist100k_k40_graph.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/gist100k/gist100k_dpg.txt";
-        graph_path = "D:/KNNDatasets/rand1m/rand1m100d_knn_graph_r.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/rand1m/rand1m100d_dpg0.txt";
-        //graph_path = "/mnt/d/Codes/KNN_Demos/datasets/rand1m/rand1m100d_dpg2_k20.txt";
-        //graph_path = "D:/KNNDatasets/rand10k/rand10k_knn_graph.txt";
-        return graph_path;
+  static void ReadIVecs(const string &data_path, int **vectors_ptr,
+                        int *num_ptr, int *dim_ptr, int read_num = -1) {
+    int *&vectors = *vectors_ptr;
+    int &num = *num_ptr;
+    int &dim = *dim_ptr;
+    ifstream in(data_path, ios::binary);
+    if (!in.is_open()) {
+      cerr << "Can't open " << data_path << endl;
+      exit(-1);
     }
-
-    static std::string GetQueryPath() {
-        std::string query_path;
-        //query_path = "D:/KNNDatasets/siftsmall_txt/siftsmall_base.txt";
-        //query_path = "D:/KNNDatasets/sift100k/sift_query.txt";
-        //query_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift_query.txt";
-        //query_path = "/mnt/d/Codes/KNN_Demos/datasets/rand100k/rand100k4d.txt";
-        //query_path = "/mnt/d/Codes/KNN_Demos/datasets/glove100k/glove100k.txt";
-        //query_path = "C:/KNNDatasets/gist100k_query.txt";
-        query_path = "D:/KNNDatasets/rand1m/rand_qry.txt";
-        //query_path = "D:/KNNDatasets/rand10k/rand_qry.txt";
-        return query_path;
+    in.read((char *)&dim, 4);
+    if (read_num == -1) {
+      in.seekg(0, ios::end);
+      ios::pos_type file_tail_pos = in.tellg();
+      size_t file_size = (size_t)file_tail_pos;
+      read_num = file_size / (size_t)(dim + 1) / 4;
     }
-    static void GetQueryPath(std::string &query_path) {
-        //query_path = "D:/KNNDatasets/siftsmall_txt/siftsmall_base.txt";
-        //query_path = "D:/KNNDatasets/sift100k/sift_query.txt";
-        //query_path = "/mnt/d/Codes/KNN_Demos/datasets/sift1m/sift_query.txt";
-        //query_path = "/mnt/d/Codes/KNN_Demos/datasets/rand100k/rand100k4d.txt";
-        //query_path = "/mnt/d/Codes/KNN_Demos/datasets/glove100k/glove100k.txt";
-        //query_path = "C:/KNNDatasets/gist100k_query.txt";
-        query_path = "D:/KNNDatasets/rand1m/rand_qry.txt";
-        //query_path = "D:/KNNDatasets/rand10k/rand_qry.txt";
+    in.seekg(0, ios::beg);
+    num = read_num;
+    vectors = new int[(size_t)read_num * (size_t)dim];
+    int tmp = 0;
+    for (int i = 0; i < read_num; i++) {
+      in.read((char *)&tmp, 4);
+      in.read((char *)(vectors + (size_t)i * dim), dim * 4);
     }
+    in.close();
+  }
 
-    static void Read2DVector(std::vector<std::vector<int>> &target,
-                             const std::string &data_path) {
-        std::ifstream in(data_path);
-        if (!in.is_open()) {
-            throw(std::string("Failed to open ") + data_path);
-        }
-        int size, dim;
-        in >> size >> dim;
-        target.resize(size);
-        for (int i = 0; i < size; i++) {
-            int id, nb_num;
-            in >> id >> nb_num;
-            target[i].resize(nb_num);
-            for (int j = 0; j < nb_num; j++) {
-                in >> target[i][j];
-            }
-        }
-        in.close();
+  static void WriteIVecs(const string &data_path, const int *vectors,
+                         const int num, const int dim) {
+    ofstream out(data_path, ios::binary);
+    for (int i = 0; i < num; i++) {
+      out.write((char*)&dim, 4);
+      out.write((char*)vectors, dim * 4);
     }
+    out.close();
+  }
 
-    static void ReadVecs(float *&vecs, int &size, int &dim,
-                         const std::string &data_path, bool show_process = true) {
-        std::ifstream in(data_path);
-        if (!in.is_open()) {
-            throw(std::string("Failed to open ") + data_path);
-        }
-        in >> size >> dim;
-        std::cerr << size << " " << dim << std::endl;
-        vecs = new float[size * dim];
-        for (int i = 0; i < size; i++) {
-            if (show_process) {
-                if (i % 12345 == 0) 
-                    std::cerr << "\r" << i;
-                if (i == size - 1)
-                    std::cerr << "\r" << size;
-            }
-            for (int j = 0; j < dim; j++) {
-                in >> vecs[i * dim + j];
-            }
-        } 
-        if (show_process) {
-            std::cerr << std::endl;
-        }
-        in.close();
+  static void ReadVecs(const string &data_path, float **vectors_ptr,
+                       int *num_ptr, int *dim_ptr, const bool show_process = true) {
+    float *&vecs = *vectors_ptr;
+    int &num = *num_ptr;
+    int &dim = *dim_ptr;
+    std::ifstream in(data_path);
+    if (!in.is_open()) {
+      throw(std::string("Failed to open ") + data_path);
     }
+    in >> num >> dim;
+    std::cerr << num << " " << dim << std::endl;
+    vecs = new float[num * dim];
+    for (int i = 0; i < num; i++) {
+      if (show_process) {
+        if (i % 12345 == 0) std::cerr << "\r" << i;
+        if (i == num - 1) std::cerr << "\r" << num;
+      }
+      for (int j = 0; j < dim; j++) {
+        in >> vecs[i * dim + j];
+      }
+    }
+    if (show_process) {
+      std::cerr << std::endl;
+    }
+    in.close();
+  }
 
-    static int GetK() { return 100; }
+  static void ReadVecs(float *&vecs, int &size, int &dim,
+                       const std::string &data_path, bool show_process = true) {
+    std::ifstream in(data_path);
+    if (!in.is_open()) {
+      throw(std::string("Failed to open ") + data_path);
+    }
+    in >> size >> dim;
+    std::cerr << size << " " << dim << std::endl;
+    vecs = new float[size * dim];
+    for (int i = 0; i < size; i++) {
+      if (show_process) {
+        if (i % 12345 == 0) std::cerr << "\r" << i;
+        if (i == size - 1) std::cerr << "\r" << size;
+      }
+      for (int j = 0; j < dim; j++) {
+        in >> vecs[i * dim + j];
+      }
+    }
+    if (show_process) {
+      std::cerr << std::endl;
+    }
+    in.close();
+  }
 };
 }  // namespace xmuknn
 

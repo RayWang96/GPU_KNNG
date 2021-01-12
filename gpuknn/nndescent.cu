@@ -1035,7 +1035,6 @@ float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
 
   auto start = chrono::steady_clock::now();
   MarkAllToOld<<<g_size, NEIGHB_NUM_PER_LIST>>>(origin_knn_graph_dev);
-  cudaDeviceSynchronize();
   if (calc_between_new_neighbs) {
     NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
         origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
@@ -1388,8 +1387,9 @@ void NNDescentRefine(NNDElement *knngraph_dev,
   cerr << "All procedure costs: " << sum_costs << endl;
   cerr << endl;
   cudaFree(graph_new_dev);
-  cudaFree(newg_list_size_dev);
   cudaFree(graph_old_dev);
+  
+  cudaFree(newg_list_size_dev);
   cudaFree(oldg_list_size_dev);
   cudaFree(newg_revlist_size_dev);
   cudaFree(oldg_revlist_size_dev);
@@ -1478,8 +1478,9 @@ void NNDescent(NNDElement **knngraph_result_dev_ptr, const float *vectors_dev,
   cerr << "All procedure costs: " << sum_costs << endl;
   cerr << endl;
   cudaFree(graph_new_dev);
-  cudaFree(newg_list_size_dev);
   cudaFree(graph_old_dev);
+  
+  cudaFree(newg_list_size_dev);
   cudaFree(oldg_list_size_dev);
   cudaFree(newg_revlist_size_dev);
   cudaFree(oldg_revlist_size_dev);
