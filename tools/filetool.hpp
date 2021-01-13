@@ -10,7 +10,7 @@ namespace xmuknn {
 class FileTool {
  public:
   static void ReadFVecs(const string &data_path, float **vectors_ptr,
-                        int *num_ptr, int *dim_ptr, int read_num = -1) {
+                        int *num_ptr, int *dim_ptr) {
     float *&vectors = *vectors_ptr;
     int &num = *num_ptr;
     int &dim = *dim_ptr;
@@ -20,17 +20,41 @@ class FileTool {
       exit(-1);
     }
     in.read((char *)&dim, 4);
-    if (read_num == -1) {
-      in.seekg(0, ios::end);
-      ios::pos_type file_tail_pos = in.tellg();
-      size_t file_size = (size_t)file_tail_pos;
-      read_num = file_size / (size_t)(dim + 1) / 4;
-    }
+    in.seekg(0, ios::end);
+    ios::pos_type file_tail_pos = in.tellg();
+    size_t file_size = (size_t)file_tail_pos;
+    num = file_size / (size_t)(dim + 1) / 4;
     in.seekg(0, ios::beg);
-    num = read_num;
-    vectors = new float[(size_t)read_num * (size_t)dim];
+    vectors = new float[(size_t)num * (size_t)dim];
     int tmp = 0;
-    for (int i = 0; i < read_num; i++) {
+    for (int i = 0; i < num; i++) {
+      in.read((char *)&tmp, 4);
+      in.read((char *)(vectors + (size_t)i * dim), dim * 4);
+    }
+    in.close();
+  }
+
+  static void ReadFVecs(const string &data_path, float **vectors_ptr,
+                        int *dim_ptr, int begin_pos, int num_to_read) {
+    float *&vectors = *vectors_ptr;
+    int &dim = *dim_ptr;
+    ifstream in(data_path, ios::binary);
+    if (!in.is_open()) {
+      cerr << "Can't open " << data_path << endl;
+      exit(-1);
+    }
+    in.read((char *)&dim, 4);
+
+    in.seekg(0, ios::end);
+    ios::pos_type file_tail_pos = in.tellg();
+    size_t file_size = (size_t)file_tail_pos;
+    int total_num = file_size / (size_t)(dim + 1) / 4;
+    assert(begin_pos + num_to_read <= total_num);
+
+    in.seekg((size_t)begin_pos * (dim + 1) * 4, ios::beg);
+    vectors = new float[(size_t)num_to_read * (size_t)dim];
+    int tmp = 0;
+    for (int i = 0; i < num_to_read; i++) {
       in.read((char *)&tmp, 4);
       in.read((char *)(vectors + (size_t)i * dim), dim * 4);
     }
@@ -48,7 +72,7 @@ class FileTool {
   }
 
   static void ReadIVecs(const string &data_path, int **vectors_ptr,
-                        int *num_ptr, int *dim_ptr, int read_num = -1) {
+                        int *num_ptr, int *dim_ptr) {
     int *&vectors = *vectors_ptr;
     int &num = *num_ptr;
     int &dim = *dim_ptr;
@@ -58,17 +82,41 @@ class FileTool {
       exit(-1);
     }
     in.read((char *)&dim, 4);
-    if (read_num == -1) {
-      in.seekg(0, ios::end);
-      ios::pos_type file_tail_pos = in.tellg();
-      size_t file_size = (size_t)file_tail_pos;
-      read_num = file_size / (size_t)(dim + 1) / 4;
-    }
+    in.seekg(0, ios::end);
+    ios::pos_type file_tail_pos = in.tellg();
+    size_t file_size = (size_t)file_tail_pos;
+    num = file_size / (size_t)(dim + 1) / 4;
     in.seekg(0, ios::beg);
-    num = read_num;
-    vectors = new int[(size_t)read_num * (size_t)dim];
+    vectors = new int[(size_t)num * (size_t)dim];
     int tmp = 0;
-    for (int i = 0; i < read_num; i++) {
+    for (int i = 0; i < num; i++) {
+      in.read((char *)&tmp, 4);
+      in.read((char *)(vectors + (size_t)i * dim), dim * 4);
+    }
+    in.close();
+  }
+
+  static void ReadIVecs(const string &data_path, int **vectors_ptr,
+                        int *dim_ptr, int begin_pos, int num_to_read) {
+    int *&vectors = *vectors_ptr;
+    int &dim = *dim_ptr;
+    ifstream in(data_path, ios::binary);
+    if (!in.is_open()) {
+      cerr << "Can't open " << data_path << endl;
+      exit(-1);
+    }
+    in.read((char *)&dim, 4);
+
+    in.seekg(0, ios::end);
+    ios::pos_type file_tail_pos = in.tellg();
+    size_t file_size = (size_t)file_tail_pos;
+    int total_num = file_size / (size_t)(dim + 1) / 4;
+    assert(begin_pos + num_to_read <= total_num);
+
+    in.seekg((size_t)begin_pos * (dim + 1) * 4, ios::beg);
+    vectors = new int[(size_t)num_to_read * (size_t)dim];
+    int tmp = 0;
+    for (int i = 0; i < num_to_read; i++) {
       in.read((char *)&tmp, 4);
       in.read((char *)(vectors + (size_t)i * dim), dim * 4);
     }

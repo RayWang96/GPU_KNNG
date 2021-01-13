@@ -194,7 +194,7 @@ void TestFileTools() {
   // int dim;
   // auto start = chrono::steady_clock::now();
   // FileTool::ReadFVecs("/home/hwang/data/sift1m/sift_base.fvecs", &vectors, &num,
-  //                     &dim, 1000);
+  //                     &dim);
   // auto end = chrono::steady_clock::now();
   // float time_cost =
   //     (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
@@ -206,7 +206,7 @@ void TestFileTools() {
   // int gt_dim;
   // FileTool::ReadVecs(gt_vectors, gt_num, gt_dim,
   //                    "/home/hwang/data/sift1m/sift1m.txt");
-  // for (int i = 0; i < 1000; i++) {
+  // for (int i = 0; i < num; i++) {
   //   for (int j = 0; j < dim; j++) {
   //     int pos = i * dim + j;
   //     assert(vectors[pos] == gt_vectors[pos]);
@@ -252,6 +252,30 @@ void TestFileTools() {
   //     1e6;
   // FileTool::WriteFVecs("/home/hwang/data/sift5m/sift5m.fvecs", vectors, num, dim);
   // delete[] vectors;
+
+  float *vectors;
+  int start_pos = 900000;
+  int num = 100000;
+  int dim;
+  auto start = chrono::steady_clock::now();
+  FileTool::ReadFVecs("/home/hwang/data/sift1m/sift_base.fvecs", &vectors,
+                      &dim, start_pos, num);
+  auto end = chrono::steady_clock::now();
+  float time_cost =
+      (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count() /
+      1e6;
+  float *gt_vectors;
+  int gt_num, gt_dim;
+  FileTool::ReadVecs(gt_vectors, gt_num, gt_dim,
+                     "/home/hwang/data/sift1m/sift1m.txt");
+  cerr << num << " " << dim << endl;
+  for (int i = start_pos; i < start_pos + num; i++) {
+    for (int j = 0; j < dim; j++) {
+      assert(vectors[(i-start_pos) * dim + j] == gt_vectors[i * dim + j]);
+    }
+  }
+  delete[] vectors;
 }
 
 void TestMemoryManager() {
