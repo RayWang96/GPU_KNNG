@@ -1,7 +1,7 @@
 #ifndef XMUKNN_NNDESCENT_CUH
 #define XMUKNN_NNDESCENT_CUH
 #include "../xmuknn.h"
-#include "nndescent_element.cuh"
+#include "../tools/nndescent_element.cuh"
 using namespace std;
 using namespace xmuknn;
 
@@ -27,9 +27,9 @@ namespace gpuknn {
 void NNDescentRefine(NNDElement *knngraph_result_dev_ptr,
                      const float *vectors_dev, const int vecs_size,
                      const int vecs_dim, const int iteration = 6);
-void NNDescent(NNDElement **knngraph_result_dev_ptr, const float *vectors_dev,
-               const int vecs_size, const int vecs_dim,
-               const int iteration = 6);
+void NNDescent(NNDElement **knngraph_result_ptr, const float *vectors_dev,
+               const int vecs_size, const int vecs_dim, const int iteration = 6,
+               const bool store_result_in_device = true);
 vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
                                      const int vecs_dim,
                                      const int iteration = 6);
