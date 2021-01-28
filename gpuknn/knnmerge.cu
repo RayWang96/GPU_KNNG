@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <curand.h>
+
 #include <chrono>
 #include <iostream>
 
@@ -14,10 +15,12 @@
 #endif
 using namespace std;
 
-__global__ void CopySecondHalfToKNNGraph(
-    NNDElement *knngraph, const NNDElement *knngraph_first,
-    const int knngraph_first_size, const NNDElement *knngraph_second,
-    const int knngraph_second_size, const int *random_knngraph) {
+__global__ void CopySecondHalfToKNNGraph(NNDElement *knngraph,
+                                         const NNDElement *knngraph_first,
+                                         const int knngraph_first_size,
+                                         const NNDElement *knngraph_second,
+                                         const int knngraph_second_size,
+                                         const int *random_knngraph) {
   int list_id = blockIdx.x;
   int tx = threadIdx.x;
   int lane_id = tx % WARP_SIZE;
@@ -48,7 +51,8 @@ __global__ void CopySecondHalfToKNNGraph(
   } else {
     int knngraph_second_pos_base =
         (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
-    rand_knngraph_pos_base = (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
+    rand_knngraph_pos_base =
+        (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
     if (tx < WARP_SIZE) {
       int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
       for (int i = 0; i < it_num; i++) {
@@ -142,14 +146,16 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
       int new_label;
       if (list_id < knngraph_first_size) {
         int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
-        new_label = xorshift64star(rand_knngraph_pos_base) % knngraph_second_size;
+        new_label =
+            xorshift64star(rand_knngraph_pos_base) % knngraph_second_size;
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
           new_label = xorshift64star(new_label) % knngraph_second_size;
         }
       } else {
         int rand_knngraph_pos_base =
             (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
-        new_label = xorshift64star(rand_knngraph_pos_base) % knngraph_first_size;
+        new_label =
+            xorshift64star(rand_knngraph_pos_base) % knngraph_first_size;
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
           new_label = xorshift64star(new_label) % knngraph_first_size;
         }
@@ -200,11 +206,11 @@ void PrepareGraphForMerge(NNDElement **knngraph_dev_ptr,
 
 void MergeVectors(float **vectors_dev_ptr, float *vectors_first_dev,
                   const int vectors_first_size, float *vectors_second_dev,
-                  const int vectors_second_size, const bool free_sub_data = false) {
+                  const int vectors_second_size,
+                  const bool free_sub_data = false) {
   float *&vectors_dev = *vectors_dev_ptr;
   int merged_size = vectors_first_size + vectors_second_size;
-  cudaMalloc(&vectors_dev,
-             (size_t)merged_size * VEC_DIM * sizeof(float));
+  cudaMalloc(&vectors_dev, (size_t)merged_size * VEC_DIM * sizeof(float));
   cudaMemcpyAsync(vectors_dev, vectors_first_dev,
                   (size_t)vectors_first_size * VEC_DIM * sizeof(float),
                   cudaMemcpyDeviceToDevice);
@@ -221,9 +227,8 @@ void MergeVectors(float **vectors_dev_ptr, float *vectors_first_dev,
 }
 
 namespace gpuknn {
-void KNNMerge(NNDElement **knngraph_merged_dev_ptr,
-              float *vectors_first_dev, const int vectors_first_size,
-              NNDElement *knngraph_first_dev,
+void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
+              const int vectors_first_size, NNDElement *knngraph_first_dev,
               float *vectors_second_dev, const int vectors_second_size,
               NNDElement *knngraph_second_dev, const bool free_sub_data) {
   NNDElement *&knngraph_merged_dev = *knngraph_merged_dev_ptr;
@@ -231,7 +236,8 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr,
   int merged_graph_size = vectors_first_size + vectors_second_size;
   auto start = chrono::steady_clock::now();
   MarkAllToOld<<<vectors_first_size, NEIGHB_NUM_PER_LIST>>>(knngraph_first_dev);
-  MarkAllToOld<<<vectors_second_size, NEIGHB_NUM_PER_LIST>>>(knngraph_second_dev);
+  MarkAllToOld<<<vectors_second_size, NEIGHB_NUM_PER_LIST>>>(
+      knngraph_second_dev);
   cudaDeviceSynchronize();
   PrepareGraphForMerge(&knngraph_merged_dev, knngraph_first_dev,
                        vectors_first_size, knngraph_second_dev,
@@ -250,8 +256,7 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr,
 }
 
 void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
-                      const float *vectors_first,
-                      const int vectors_first_size,
+                      const float *vectors_first, const int vectors_first_size,
                       const NNDElement *knngraph_first,
                       const float *vectors_second,
                       const int vectors_second_size,
@@ -298,8 +303,8 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
   cudaMemcpy(vectors_first_dev, vectors_first,
              (size_t)vectors_first_size * VEC_DIM * sizeof(float),
              cudaMemcpyHostToDevice);
-  cudaMemcpy(vectors_second_dev, vectors_second, (size_t)vectors_second_size *
-                                      VEC_DIM * sizeof(float),
+  cudaMemcpy(vectors_second_dev, vectors_second,
+             (size_t)vectors_second_size * VEC_DIM * sizeof(float),
              cudaMemcpyHostToDevice);
 
   // Dev. ptrs are freed inside the function.
@@ -311,6 +316,7 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
           .count() /
       1e6;
   cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
+
   NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
                   5);
   cudaFree(vectors_dev);

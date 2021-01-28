@@ -11,8 +11,10 @@
 #include "gpuknn/knnmerge.cuh"
 #include "gpuknn/nndescent.cuh"
 #include "tools/distfunc.hpp"
+#include "tools/evaluate.hpp"
 #include "tools/filetool.hpp"
 #include "tools/knndata_manager.hpp"
+#include "tools/timer.hpp"
 #include "xmuknn.h"
 
 using namespace std;
@@ -27,51 +29,48 @@ void Evaluate(const string &data_path, const string &ground_truth_path) {
   int re = system(cmd.c_str());
 }
 
+void ToTxtResult(const string &kgraph_path, const string &out_path) {
+  NNDElement *result_graph;
+  int num, dim;
+  FileTool::ReadBinaryVecs(kgraph_path, &result_graph, &num, &dim);
+
+  int *result_index_graph = new int[num * dim];
+  for (int i = 0; i < num; i++) {
+    for (int j = 0; j < dim; j++) {
+      result_index_graph[i * dim + j] = result_graph[i * dim + j].label();
+    }
+  }
+  FileTool::WriteTxtVecs(out_path, result_index_graph, num, dim);
+  for (int i = 0; i < num; i++) {
+    for (int j = 0; j < dim; j++) {
+      result_index_graph[i * dim + j] = result_graph[i * dim + j].distance();
+    }
+  }
+  FileTool::WriteTxtVecs(out_path + ".txt", result_index_graph, num, dim);
+  delete[] result_graph;
+  delete[] result_index_graph;
+}
+
 void TestCUDANNDescent() {
   int k = 30;
   // string out_path = FileTool::GetOutPath();
 
-  // string base_path
-  //     = "/home/hwang//data/sift10k/sift10k.txt";
-  // string out_path
-  //     = "/home/hwang/data/result/sift10k_knng_k64.txt";
-  // string ground_truth_path
-  //     = "/home/hwang//data/sift10k/sift10k_groundtruth_self.txt";
-
-  // string base_path = "/home/hwang//data/sift100k/sift100k.txt";
-  // string out_path = "/home/hwang/data/result/sift100k_knng_k64.txt";
-  // string ground_truth_path =
-  //     "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
-
-  // string base_path = "/home/hwang/data/glove1m/glove1m_norm_base.txt";
-  // string out_path = "/home/hwang/data/result/glove1m_knng_k64.txt";
-  // string ground_truth_path =
-  //     "/home/hwang/data/glove1m/glove1m_gold_knn40.txt";
-
-  // string base_path = "/home/hwang//data/sift1m/sift1m.txt";
-  // string out_path = "/home/hwang/data/result/sift1m_knng_k64.txt";
-  // string ground_truth_path =
-  //     "/home/hwang//data/sift1m/sift1m_gold_knn40_sorted.txt";
-
-  // string base_path = "/home/hwang//data/sift10m/sift10m.fvecs";
-  // string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
-  // string ground_truth_path =
-  //     "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
-
-  // string base_path = "/home/hwang/data/glove100k/glove100k_norm_base.txt";
-  // string out_path = "/home/hwang/data/result/glove100k_knng_k64.txt";
-  // string ground_truth_path =
-  //     "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
-
   string base_path = "/home/hwang/data/sift1m/sift_base.fvecs";
-  string out_path = "/home/hwang/data/result/sift1m_knng_k64.txt";
+  string out_path = "/home/hwang/data/result/sift1m_knng_k64.kgraph";
   string ground_truth_path =
-      "/home/hwang//data/sift1m/sift1m_gold_knn40_sorted.txt";
+      "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
 
   // string base_path = "/home/hwang/data/sift5m/sift5m.fvecs";
   // string out_path = "/home/hwang/data/result/sift5m_knng_k64.txt";
   // string ground_truth_path =
   //     "/home/hwang/data/sift1m/sift1m_gold_knn40_sorted.txt";
+
+  // /home/hwang/data/deep1m/deep1m_knngraph_k100.ivecs
+
+  // string base_path = "/home/hwang/data/deep1m/deep1m.fvecs";
+  // string out_path = "/home/hwang/data/result/deep1m_k64.kgraph";
+  // string ground_truth_path =
+  //     "/home/hwang/data/deep1m/deep1m_knngraph_k100.ivecs";
 
   auto out = ofstream(out_path);
   if (!out.is_open()) {
@@ -81,35 +80,25 @@ void TestCUDANNDescent() {
 
   float *vectors;
   int vecs_size, vecs_dim;
-  // FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
+  // FileTool::ReadTxtVecs(vectors, vecs_size, vecs_dim, base_path);
   FileTool::ReadBinaryVecs(base_path, &vectors, &vecs_size, &vecs_dim);
   auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim, 6);
 
-  // vector<float> vectors_vec(16000000ul * 128ul);
-  // float *vectors;
-  // int vecs_size, vecs_dim;
-  // // FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
-  // FileTool::ReadBinaryVecs(base_path, &vectors, &vecs_size, &vecs_dim);
-  // for (size_t i = 0; i < 16000000ul * 128ul; i++) {
-  //   vectors_vec[i] = vectors[i % 10000000];
-  // }
-  // vecs_size = 16000000;
-  // auto knn_graph =
-  //     gpuknn::NNDescent(vectors_vec.data(), vecs_size, vecs_dim, 6);
+  NNDElement *result_graph =
+      new NNDElement[(size_t)knn_graph.size() * knn_graph[0].size()];
 
-  out << knn_graph.size() << " " << k << endl;
+  int pos = 0;
   for (int i = 0; i < knn_graph.size(); i++) {
-    const auto &x = knn_graph[i];
-    out << i << " " << x.size() << " ";
-    for (auto y : x) {
-      // out << y.distance() << ", " << y.label() << "\t";
-      // assert(y.label() != i);
-      out << y.label() << "\t";
+    for (int j = 0; j < knn_graph[i].size(); j++) {
+      result_graph[pos++] = knn_graph[i][j];
     }
-    out << endl;
   }
-  out.close();
-  Evaluate(out_path, ground_truth_path);
+  FileTool::WriteBinaryVecs(out_path, result_graph, knn_graph.size(),
+                            knn_graph[0].size());
+  ToTxtResult(out_path, out_path + ".txt");
+  delete[] result_graph;
+  cout << "Top1: " << Evaluate(out_path, ground_truth_path, 1) << endl;
+  cout << "Top10: " << Evaluate(out_path, ground_truth_path, 10) << endl;
   delete[] vectors;
   return;
 }
@@ -149,12 +138,11 @@ void TestCUDAMerge() {
   //     "/home/hwang/data/sift1m/sift1m_gold_knn40_sorted.txt";
   string base_path = "/home/hwang//data/sift10m/sift10m.fvecs";
   string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
-  string ground_truth_path =
-      "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
+  string ground_truth_path = "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
   float *vectors;
   int vecs_size, vecs_dim;
   FileTool::ReadBinaryVecs(base_path, &vectors, &vecs_size, &vecs_dim);
-  // FileTool::ReadVecs(vectors, vecs_size, vecs_dim, base_path);
+  // FileTool::ReadTxtVecs(vectors, vecs_size, vecs_dim, base_path);
   int vectors_first_size = vecs_size / 2;
   int vectors_second_size = vecs_size - vectors_first_size;
   float *vectors_first, *vectors_second;
@@ -206,7 +194,8 @@ void TestCUDAMerge() {
 void TestFileTools() {
   // float *vectors;
   // int num, dim;
-  // FileTool::ReadBinaryVecs("/home/hwang/data/sift10m/sift10m.fvecs", &vectors, &num,
+  // FileTool::ReadBinaryVecs("/home/hwang/data/sift10m/sift10m.fvecs",
+  // &vectors, &num,
   //                          &dim);
   // cerr << num << endl;
   // for (int i = 0; i < 512; i++) {
@@ -215,29 +204,24 @@ void TestFileTools() {
   // } puts("");
   // delete[] vectors;
 
-  // float *vectors;
-  // int num = 50000000, dim;
-  // FileTool::ReadBinaryVecs("/home/hwang/data/deep1b/deep1b.fvecs", &vectors,
-  //                          &dim, 50000000, num);
-  // for (int i = 0; i < 128; i++) {
-  //   if (i % 128 == 0) puts("\n");
-  //   printf("%f ", vectors[i]);
-  // } puts("");
-  // FileTool::WriteBinaryVecs("/home/hwang/data/deep100m/deep100m_2.fvecs", vectors,
-  //                           num, dim);
-  // delete[] vectors;
-
   float *vectors;
-  int num, dim;
-  FileTool::ReadVecs(vectors, num, dim,
-                     "/home/hwang/data/new_yfcc1m/yfcc1m_txt.txt");
-  FileTool::WriteBinaryVecs("/home/hwang/data/new_yfcc1m/yfcc1m.fvecs", vectors,
+  int num = 1000000, dim;
+  FileTool::ReadBinaryVecs("/home/hwang/data/deep1b/deep1b.fvecs", &vectors,
+                           &dim, 0, num);
+  FileTool::WriteBinaryVecs("/home/hwang/data/deep1m/deep1m.fvecs", vectors,
                             num, dim);
+  delete[] vectors;
+
+  // float *vectors;
+  // int num, dim;
+  // FileTool::ReadTxtVecs(vectors, num, dim,
+  //                    "/home/hwang/data/new_yfcc1m/yfcc1m_txt.txt");
+  // FileTool::WriteBinaryVecs("/home/hwang/data/new_yfcc1m/yfcc1m.fvecs",
+  // vectors,
+  //                           num, dim);
 }
 
-void TestMemoryManager() {
-  PredPeakGPUMemory(16000000, 128, 32, 32, false);
-}
+void TestMemoryManager() { PredPeakGPUMemory(16000000, 128, 32, 32, false); }
 
 void TestDataManager() {
   KNNDataManager data_manager("/home/hwang/data/deep1b/deep1b");
@@ -249,7 +233,7 @@ void TestDataManager() {
       int id;
       cin >> id;
       data_manager.ActivateShard(id);
-    } else if (cmd == "del"){
+    } else if (cmd == "del") {
       int id;
       cin >> id;
       data_manager.DiscardShard(id);
@@ -258,9 +242,9 @@ void TestDataManager() {
       cin >> id;
       for (int i = 0; i < 96; i++) {
         cerr << data_manager.GetVectors(id)[i] << " ";
-      } cerr << endl;
-    } 
-    else {
+      }
+      cerr << endl;
+    } else {
       cout << "Unknown command" << endl;
     }
     auto end = chrono::steady_clock::now();
@@ -274,22 +258,37 @@ void TestDataManager() {
 }
 
 void TestConstructLargeKNNGraph() {
-  GenLargeKNNGraph("/home/hwang/data/sift1m/sift1m",
-                   "/home/hwang/data/result/sift1m.kgraph", 64);
+  string ref_path = "/home/hwang/data/sift1m/sift1m";
+  string result_path = "/home/hwang/data/result/kgraphs/sift1m.kgraph";
+  string gt_path = "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
+  // GenLargeKNNGraph(ref_path, result_path, 64);
+
+  // string ref_path = "/home/hwang/data/deep100m/deep100m";
+  // string result_path = "/home/hwang/data/result/deep100m.kgraph";
+
+  Timer timer;
+  timer.start();
+  GenLargeKNNGraph(ref_path, result_path, 64);
+  cerr << "Time costs: " << timer.end() << endl;
+  cerr << "Recall@1:  " << Evaluate(result_path, gt_path, 1) << endl;
+  cerr << "Recall@10: " << Evaluate(result_path, gt_path, 10) << endl;
+
+  ToTxtResult(result_path, result_path + ".txt");
 }
 
 void CheckKNNGraph() {
   NNDElement *knn_graph;
   int num, k;
-  FileTool::ReadBinaryVecs("/home/hwang/data/sift10m/sift10m.kgraph", &knn_graph,
-                           &num, &k);
+  FileTool::ReadBinaryVecs("/home/hwang/data/sift10m/sift10m.kgraph",
+                           &knn_graph, &num, &k);
   cout << num << " " << k << endl;
   int id;
   while (cin >> id) {
     for (int i = 0; i < k; i++) {
-      printf("(%f, %d) ", knn_graph[id * k + i].label(),
+      printf("(%d, %f) ", knn_graph[id * k + i].label(),
              knn_graph[id * k + i].distance());
-    } puts("");
+    }
+    puts("");
   }
   delete[] knn_graph;
 }
@@ -314,14 +313,42 @@ void TxtToIVecs() {
   delete[] knn_graph;
 }
 
+void IvecsTxtToIVecs() {
+  string in_path = "/home/hwang/codes/faiss/deep1m_gt.txt";
+  string out_path = "/home/hwang/data/deep1m/deep1m_knngraph_k100.ivecs";
+  ifstream in(in_path);
+  int graph_size = 1000000, dim = 100;
+  int *knn_graph = new int[graph_size * dim];
+  for (int i = 0; i < graph_size; i++) {
+    int id, neighb_num;
+    in >> neighb_num;
+    for (int j = 0; j < neighb_num; j++) {
+      int nb_id;
+      in >> nb_id;
+      knn_graph[i * neighb_num + j] = nb_id;
+    }
+  }
+  FileTool::WriteBinaryVecs(out_path, knn_graph, graph_size, dim);
+  delete[] knn_graph;
+}
+
+void TestEvaluator() {
+  string result_path = "/home/hwang/data/result/sift1m.kgraph";
+  string gt_path = "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
+  cerr << Evaluate(result_path, gt_path, 1) << endl;
+  cerr << Evaluate(result_path, gt_path, 10) << endl;
+}
+
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
   // TestCUDANNDescent();
   // TestDataManager();
   TestConstructLargeKNNGraph();
+  // TestEvaluator();
   // TxtToIVecs();
   // TestFileTools();
+  // IvecsTxtToIVecs();
   // TestMemoryManager();
   // TestCUDAMerge();
   // TestTiledDistanceCompare();

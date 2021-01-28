@@ -174,9 +174,9 @@ class FileTool {
     out.close();
   }
 
-  static void ReadVecs(const string &data_path, float **vectors_ptr,
-                       int *num_ptr, int *dim_ptr,
-                       const bool show_process = true) {
+  static void ReadTxtVecs(const string &data_path, float **vectors_ptr,
+                          int *num_ptr, int *dim_ptr,
+                          const bool show_process = true) {
     float *&vecs = *vectors_ptr;
     int &num = *num_ptr;
     int &dim = *dim_ptr;
@@ -202,8 +202,9 @@ class FileTool {
     in.close();
   }
 
-  static void ReadVecs(float *&vecs, int &size, int &dim,
-                       const std::string &data_path, bool show_process = true) {
+  static void ReadTxtVecs(float *&vecs, int &size, int &dim,
+                          const std::string &data_path,
+                          bool show_process = true) {
     std::ifstream in(data_path);
     if (!in.is_open()) {
       throw(std::string("Failed to open ") + data_path);
@@ -224,6 +225,20 @@ class FileTool {
       std::cerr << std::endl;
     }
     in.close();
+  }
+
+  template <typename T>
+  static void WriteTxtVecs(const string &data_path, const T *vectors,
+                           const int write_num, const int dim) {
+    ofstream out(data_path);
+    for (int i = 0; i < write_num; i++) {
+      out << dim << '\t';
+      for (int j = 0; j < dim; j++) {
+        out << vectors[i * dim + j] << '\t';
+      }
+      out << endl;
+    }
+    out.close();
   }
 };
 

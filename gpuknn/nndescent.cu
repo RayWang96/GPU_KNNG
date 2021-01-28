@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <curand.h>
 #include <thrust/copy.h>
 #include <thrust/device_ptr.h>
@@ -6,7 +7,6 @@
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 
-#include <assert.h>
 #include <algorithm>
 #include <bitset>
 #include <chrono>
@@ -19,12 +19,12 @@
 #include <vector>
 
 #include "../tools/distfunc.hpp"
+#include "../tools/nndescent_element.cuh"
 #include "../xmuknn.h"
-#include "knncuda_tools.cuh"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "knncuda_tools.cuh"
 #include "nndescent.cuh"
-#include "../tools/nndescent_element.cuh"
 
 #ifdef __INTELLISENSE__
 #include "../intellisense_cuda_intrinsics.h"
@@ -397,10 +397,10 @@ void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
   auto end = chrono::steady_clock::now();
   if (VERBOSE) {
     cerr << "Prepare kernel costs: "
-        << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+         << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
                     .count() /
                 1e6
-        << endl;
+         << endl;
   }
 }
 
@@ -1169,7 +1169,7 @@ __global__ void SortEachBlockKernel(NNDElement *knn_graph,
   int global_base_pos = list_id * NEIGHB_NUM_PER_LIST;
   int tx = threadIdx.x;
   int lane_id = tx % WARP_SIZE;
-  int block_id = tx / WARP_SIZE;  
+  int block_id = tx / WARP_SIZE;
 
   NNDElement elem;
   int pos = block_id * WARP_SIZE + lane_id;
@@ -1244,7 +1244,7 @@ void InitRandomKNNGraph(NNDElement *knn_graph_dev, const int graph_size,
       thrust::device_vector<unsigned long long> dev_random_sequence(
           graph_size * NEIGHB_NUM_PER_LIST);
       DevRNGLongLong(thrust::raw_pointer_cast(dev_random_sequence.data()),
-                    graph_size * NEIGHB_NUM_PER_LIST);
+                     graph_size * NEIGHB_NUM_PER_LIST);
       InitKNNGraphIndexKernel<<<graph_size, NEIGHB_NUM_PER_LIST>>>(
           knn_graph_dev, graph_size,
           thrust::raw_pointer_cast(dev_random_sequence.data()));
@@ -1299,10 +1299,10 @@ void InitRandomKNNGraph(NNDElement *knn_graph_dev, const int graph_size,
   }
   if (VERBOSE) {
     cerr << "Initiate costs: "
-        << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+         << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
                     .count() /
                 1e6
-        << endl;
+         << endl;
   }
 }
 
@@ -1316,9 +1316,9 @@ __global__ void MergeBlocksKernel(NNDElement *knn_graph, const int graph_size) {
   c_cache[tx] = knn_graph[global_pos_base + tx];
   list_size = WARP_SIZE;
   for (int i = 1; i < NEIGHB_BLOCKS_NUM; i++) {
-    list_size =
-        MergeList(c_cache, list_size, &knn_graph[global_pos_base + i * WARP_SIZE],
-                  WARP_SIZE, tmp_cache);
+    list_size = MergeList(c_cache, list_size,
+                          &knn_graph[global_pos_base + i * WARP_SIZE],
+                          WARP_SIZE, tmp_cache);
     int it_num = GetItNum(list_size, WARP_SIZE);
     for (int j = 0; j < it_num; j++) {
       int pos = j * WARP_SIZE + tx;
@@ -1337,14 +1337,14 @@ __global__ void MergeBlocksKernel(NNDElement *knn_graph, const int graph_size) {
 }
 
 void MergeBlocksInNNLists(NNDElement *knn_graph, const int graph_size) {
-  MergeBlocksKernel<<<graph_size, WARP_SIZE>>> (knn_graph, graph_size);
+  MergeBlocksKernel<<<graph_size, WARP_SIZE>>>(knn_graph, graph_size);
   cudaDeviceSynchronize();
 }
 
 namespace gpuknn {
-void NNDescentRefine(NNDElement *knngraph_dev,
-                     const float *vectors_dev, const int vecs_size,
-                     const int vecs_dim, const int iteration) {
+void NNDescentRefine(NNDElement *knngraph_dev, const float *vectors_dev,
+                     const int vecs_size, const int vecs_dim,
+                     const int iteration) {
   int k = NEIGHB_NUM_PER_LIST;
   int *graph_new_dev, *newg_list_size_dev, *graph_old_dev, *oldg_list_size_dev;
   int *newg_revlist_size_dev, *oldg_revlist_size_dev;
@@ -1415,7 +1415,7 @@ void NNDescentRefine(NNDElement *knngraph_dev,
   if (VERBOSE) {
     cerr << "Compare times: " << cmp_times << endl;
     cerr << "FLOPS: " << cmp_times * 128 * 3 / kernel_costs / pow(1024.0, 3)
-        << "G" << endl;
+         << "G" << endl;
     cerr << "Kernel costs: " << kernel_costs << endl;
     cerr << "Update costs: " << iteration_costs << endl;
     cerr << "Get NB graph costs: " << get_nb_graph_time << endl;
@@ -1424,7 +1424,7 @@ void NNDescentRefine(NNDElement *knngraph_dev,
   }
   cudaFree(graph_new_dev);
   cudaFree(graph_old_dev);
-  
+
   cudaFree(newg_list_size_dev);
   cudaFree(oldg_list_size_dev);
   cudaFree(newg_revlist_size_dev);
@@ -1479,14 +1479,6 @@ void NNDescent(NNDElement **knngraph_result_ptr, const float *vectors_dev,
             .count() /
         1e6;
     get_nb_graph_time += tmp_time;
-    // GetTestGraph(&newg, &oldg, graph_new_dev, newg_list_size_dev,
-    // graph_old_dev,
-    //              oldg_list_size_dev, graph_size); // Unnecessary slow for
-    //              testing.
-    // for (int i = 0; i < newg.size(); i++) {
-    //   cmp_times += (newg[i].size() - 1) * newg[i].size() / 2 +
-    //                newg[i].size() * oldg[i].size();
-    // }
     if (VERBOSE) {
       cerr << "GetNBGraph costs " << tmp_time << endl;
     }
@@ -1516,7 +1508,7 @@ void NNDescent(NNDElement **knngraph_result_ptr, const float *vectors_dev,
   if (VERBOSE) {
     cerr << "Compare times: " << cmp_times << endl;
     cerr << "FLOPS: " << cmp_times * 128 * 3 / kernel_costs / pow(1024.0, 3)
-        << "G" << endl;
+         << "G" << endl;
     cerr << "Kernel costs: " << kernel_costs << endl;
     cerr << "Update costs: " << iteration_costs << endl;
     cerr << "Get NB graph costs: " << get_nb_graph_time << endl;
@@ -1525,7 +1517,7 @@ void NNDescent(NNDElement **knngraph_result_ptr, const float *vectors_dev,
   }
   cudaFree(graph_new_dev);
   cudaFree(graph_old_dev);
-  
+
   cudaFree(newg_list_size_dev);
   cudaFree(oldg_list_size_dev);
   cudaFree(newg_revlist_size_dev);
@@ -1533,7 +1525,8 @@ void NNDescent(NNDElement **knngraph_result_ptr, const float *vectors_dev,
 
   if (!store_result_in_device) {
     NNDElement *host_graph;
-    ToHostKNNGraph(&host_graph, knngraph_result, graph_size, NEIGHB_NUM_PER_LIST);
+    ToHostKNNGraph(&host_graph, knngraph_result, graph_size,
+                   NEIGHB_NUM_PER_LIST);
     cudaFree(knngraph_result);
     knngraph_result = host_graph;
   }
@@ -1548,15 +1541,15 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
   cudaMemcpy(vectors_dev, vectors, (size_t)vecs_size * vecs_dim * sizeof(float),
              cudaMemcpyHostToDevice);
   NNDElement *knn_graph_dev;
-  
+
   auto start = chrono::steady_clock::now();
   NNDescent(&knn_graph_dev, vectors_dev, vecs_size, vecs_dim, iteration);
   auto end = chrono::steady_clock::now();
   cerr << "GPU NNDescent costs: "
-      << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
-                .count() /
-            1e6
-      << endl;
+       << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+                  .count() /
+              1e6
+       << endl;
   vector<vector<NNDElement>> g;
   ToHostKNNGraph(&g, knn_graph_dev, vecs_size, k);  // 0.6 / 6.6
   cudaFree(vectors_dev);

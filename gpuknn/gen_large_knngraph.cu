@@ -1,14 +1,14 @@
-#include <thread>
 #include <algorithm>
+#include <thread>
 
+#include "../tools/knndata_manager.hpp"
+#include "../tools/nndescent_element.cuh"
+#include "../tools/timer.hpp"
 #include "cuda_runtime.h"
 #include "gen_large_knngraph.cuh"
+#include "knncuda_tools.cuh"
 #include "knnmerge.cuh"
 #include "nndescent.cuh"
-#include "knncuda_tools.cuh"
-#include "../tools/nndescent_element.cuh"
-#include "../tools/knndata_manager.hpp"
-#include "../tools/timer.hpp"
 using namespace std;
 
 void ReadGraph(const string &graph_path, NNDElement **knn_graph_ptr,
@@ -31,7 +31,8 @@ void WriteTXTGraph(const string &graph_path, const NNDElement *knn_graph,
     for (int j = 0; j < k; j++) {
       auto elem = knn_graph[i * k + j];
       out << elem.distance() << "\t" << elem.label() << "\t";
-    } out << endl;
+    }
+    out << endl;
   }
   out.close();
 }
@@ -54,9 +55,8 @@ void BuildEachShard(KNNDataManager &data_manager, const string &out_data_path) {
                cudaMemcpyHostToDevice);
     cout << "Building No. " << i << endl;
     knn_timer.start();
-    gpuknn::NNDescent(&knn_graph, vectors_dev,
-                      data_manager.GetVecsNum(i), data_manager.GetDim(), 6,
-                      false);
+    gpuknn::NNDescent(&knn_graph, vectors_dev, data_manager.GetVecsNum(i),
+                      data_manager.GetDim(), 6, false);
     cout << "End building No." << i << " in " << knn_timer.end() << " seconds"
          << endl;
     WriteGraph(data_manager.GetGraphDataPath(), knn_graph,
@@ -70,6 +70,7 @@ void BuildEachShard(KNNDataManager &data_manager, const string &out_data_path) {
                data_manager.GetK(), data_manager.GetBeginPosition(i));
     data_manager.DiscardShard(i);
     cudaFree(vectors_dev);
+    delete[] knn_graph;
   }
 }
 
@@ -130,20 +131,40 @@ void PreProcID(NNDElement *result_knn_graph_host, const int first_graph_size,
   }
 }
 
-void GenLargeKNNGraph(const string &vecs_data_path,
-                      const string &out_data_path,
+void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
                       const int k) {
   KNNDataManager data_manager(vecs_data_path);
+  assert(data_manager.GetDim() == VEC_DIM);
   data_manager.CheckStatus();
   BuildEachShard(data_manager, out_data_path);
+
+  // auto TmpFunc = [](const string &kgraph_path, const string &out_path) {
+  //   NNDElement *result_graph;
+  //   int num, dim;
+  //   FileTool::ReadBinaryVecs(kgraph_path, &result_graph, &num, &dim);
+
+  //   int *result_index_graph = new int[num * dim];
+  //   for (int i = 0; i < num; i++) {
+  //     for (int j = 0; j < dim; j++) {
+  //       result_index_graph[i * dim + j] = result_graph[i * dim + j].label();
+  //     }
+  //   }
+  //   FileTool::WriteTxtVecs(out_path, result_index_graph, num, dim);
+
+  //   delete[] result_graph;
+  //   delete[] result_index_graph;
+  // };
+  // FileTool::WriteTxtVecs();
   int shards_num = data_manager.GetShardsNum();
   for (int i = 0; i < shards_num - 1; i++) {
     data_manager.ActivateShard(i);
     data_manager.ActivateShard(i + 1);
+
     NNDElement *result_first, *result_second;
     ReadGraph(out_data_path, &result_first, data_manager.GetBeginPosition(i),
               data_manager.GetVecsNum(i));
-    ReadGraph(out_data_path, &result_second, data_manager.GetBeginPosition(i + 1),
+    ReadGraph(out_data_path, &result_second,
+              data_manager.GetBeginPosition(i + 1),
               data_manager.GetVecsNum(i + 1));
     for (int j = i + 1; j < shards_num; j++) {
       NNDElement *result_knn_graph_dev;
@@ -172,17 +193,13 @@ void GenLargeKNNGraph(const string &vecs_data_path,
                   &data_manager, &i, &j, &out_data_path]() {
         Timer timer;
         timer.start();
+        ReadGraph(out_data_path, &result_second,
+                  data_manager.GetBeginPosition(j), data_manager.GetVecsNum(j));
         PreProcID(result_knn_graph_host, data_manager.GetVecsNum(i),
                   data_manager.GetVecsNum(i) + data_manager.GetVecsNum(j),
                   data_manager.GetK(), data_manager.GetBeginPosition(i),
                   data_manager.GetBeginPosition(j));
-        // WriteTXTGraph(string("/home/hwang/codes/GPU_KNNG/tmp/") + to_string(i) +
-        //                   to_string(j) + ".txt",
-        //               result_knn_graph_host,
-        //               data_manager.GetVecsNum(i) + data_manager.GetVecsNum(j),
-        //               data_manager.GetK(), 0);
-        UpdateKNNGraph(&result_first,
-                       &result_knn_graph_host[0],
+        UpdateKNNGraph(&result_first, &result_knn_graph_host[0],
                        data_manager.GetVecsNum(i), data_manager.GetK());
         UpdateKNNGraph(
             &result_second,
@@ -191,7 +208,7 @@ void GenLargeKNNGraph(const string &vecs_data_path,
             data_manager.GetVecsNum(j), data_manager.GetK());
         WriteGraph(out_data_path, result_second, data_manager.GetVecsNum(j),
                    data_manager.GetK(), data_manager.GetBeginPosition(j));
-        data_manager.DiscardShard(j); 
+        data_manager.DiscardShard(j);
         cout << "Updating KNN graph costs: " << timer.end() << endl;
       });
       th3.join();
@@ -201,6 +218,8 @@ void GenLargeKNNGraph(const string &vecs_data_path,
       //          result_first[k].label());
       // } puts("");
     }
+    WriteGraph(out_data_path, result_first, data_manager.GetVecsNum(i),
+               data_manager.GetK(), data_manager.GetBeginPosition(i));
     data_manager.DiscardShard(i);
   }
   return;
