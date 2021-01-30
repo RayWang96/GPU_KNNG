@@ -6,7 +6,7 @@ using namespace std;
 using namespace xmuknn;
 
 #define LARGE_INT 0x3f3f3f3f
-const int VEC_DIM = 128;
+const int VEC_DIM = 96;
 const int NEIGHB_NUM_PER_LIST = 64;
 
 const int WARP_SIZE = 32;

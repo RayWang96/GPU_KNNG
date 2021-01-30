@@ -123,7 +123,7 @@ size_t PredPeakGPUMemory(const int vecs_num, const int vecs_dim, const int k,
   return nndescent_mem_cost;
 }
 
-__device__ uint64_t xorshift64star(uint64_t x) {
+__host__ __device__ uint64_t xorshift64star(uint64_t x) {
   x += 42;
 	x ^= x >> 12; // a
 	x ^= x << 25; // b

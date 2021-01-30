@@ -71,14 +71,20 @@ class FileTool {
 
   static void CreateBlankKNNGraph(const string &data_path, const int num,
                                   const int dim) {
-    ofstream out(data_path, ios::binary);
-    cerr << num << " " << dim << endl;
-    vector<char> tmp(dim * 4);
-    for (int i = 0; i < num; i++) {
-      out.write((char *)&dim, 4);
-      out.write((char *)tmp.data(), dim * 4);
-      out.write((char *)tmp.data(), dim * 4);
+    string cmd = "fallocate -l ";
+    size_t byte_size = (size_t)num * (dim + 1) * sizeof(NNDElement);
+    cmd += to_string(byte_size);
+    cmd += " ";
+    cmd += data_path;
+    int code = system(cmd.c_str());
+    if (code != 0){
+      cerr << "fallocate error" << endl;
+      exit(-1);
     }
+
+    ofstream out(data_path, ios::in | ios::binary);
+    cerr << num << " " << dim << endl;
+    out.write((char *)&dim, 4);
     out.close();
   }
 

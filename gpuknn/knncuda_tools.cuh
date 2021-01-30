@@ -20,5 +20,5 @@ void OutputHostKNNGraph(const vector<vector<NNDElement>> &knn_graph,
                         const bool output_distance = false);
 size_t PredPeakGPUMemory(const int vecs_num, const int vecs_dim, const int k,
                          const int sample_num, const bool thrust_random = true);
-__device__ uint64_t xorshift64star(uint64_t x); 
+__host__ __device__ uint64_t xorshift64star(uint64_t x); 
 #endif

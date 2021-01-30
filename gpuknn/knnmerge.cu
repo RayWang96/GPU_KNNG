@@ -148,16 +148,24 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
         int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
         new_label =
             xorshift64star(rand_knngraph_pos_base) % knngraph_second_size;
+        int cnt = 0;
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
-          new_label = xorshift64star(new_label) % knngraph_second_size;
+          cnt++;
+          if (cnt >= 100) {
+            printf("%d %d\n", new_label,
+                   (int)xorshift64star(new_label + cnt) % knngraph_second_size);
+          }
+          new_label = xorshift64star(new_label + cnt) % knngraph_second_size;
         }
       } else {
         int rand_knngraph_pos_base =
             (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
         new_label =
             xorshift64star(rand_knngraph_pos_base) % knngraph_first_size;
+        int cnt = 0;
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
-          new_label = xorshift64star(new_label) % knngraph_first_size;
+          cnt++;
+          new_label = xorshift64star(new_label + cnt) % knngraph_first_size;
         }
       }
       elem.SetLabel(new_label);
@@ -264,7 +272,6 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
   NNDElement *&knngraph_merged_dev = *knngraph_merged_dev_ptr;
   float *vectors_dev;
   int merged_graph_size = vectors_first_size + vectors_second_size;
-  auto start = chrono::steady_clock::now();
   NNDElement *knngraph_first_dev, *knngraph_second_dev;
   cudaMalloc(&knngraph_first_dev, (size_t)vectors_first_size *
                                       NEIGHB_NUM_PER_LIST * sizeof(NNDElement));
@@ -310,12 +317,6 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
   // Dev. ptrs are freed inside the function.
   MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
                vectors_second_dev, vectors_second_size, true);
-  auto end = chrono::steady_clock::now();
-  float time_cost =
-      (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
-          .count() /
-      1e6;
-  cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
 
   NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
                   5);

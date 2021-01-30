@@ -4,6 +4,7 @@
 #include <set>
 #include <map>
 #include <iostream>
+#include <mutex>
 
 #include "filetool.hpp"
 #include "nndescent_element.cuh"
@@ -14,6 +15,7 @@ class KNNDataManager {
   map<int, unique_ptr<NNDElement[]>> knngs_data_;
   set<int> active_ids_;
 
+  mutex mtx_;
   string data_path_;
   int dim_;
   int shards_num_;
@@ -27,7 +29,7 @@ class KNNDataManager {
   KNNDataManager(const string &data_path,
                  const int k = 64,
                  const int min_shards_num = 3,
-                 const int max_vecs_num_per_shard = 8000000)
+                 const int max_vecs_num_per_shard = 8500000)
       : data_path_(data_path),
         min_shards_num_(min_shards_num),
         max_vecs_num_per_shard_(max_vecs_num_per_shard),
@@ -83,7 +85,8 @@ class KNNDataManager {
     if (id < shards_num_) {
       return id * vecs_num_per_shard_;
     } else {
-      cerr << "ID exceed the max. num of shards." << endl;
+      cerr << "GetBeginPosition ID: " << id << "exceed the max. num of shards."
+           << endl;
       exit(-1);
     }
   }
@@ -96,7 +99,8 @@ class KNNDataManager {
     } else if (id == shards_num_ - 1) {
       return vecs_num_last_shard_;
     } else {
-      cerr << "ID exceed the max. num of shards." << endl;
+      cerr << "GetVecsNum ID: " << id << "exceed the max. num of shards."
+           << endl;
       exit(-1);
     }
   }
@@ -104,6 +108,7 @@ class KNNDataManager {
     return shards_num_;
   }
   bool IsActive(const int id) {
+    lock_guard<mutex> local_lock(mtx_);
     if (active_ids_.find(id) != active_ids_.end()) {
       return true;
     } else {
@@ -118,8 +123,9 @@ class KNNDataManager {
     if (IsActive(id)) {
       cerr << "id: " << id << " shard is already active."
            << endl;
-      exit(-1);
+      return;
     }
+    lock_guard<mutex> local_lock(mtx_);
     active_ids_.insert(id);
     int begin_pos = id * vecs_num_per_shard_;
     int read_num = vecs_num_per_shard_;
@@ -134,6 +140,7 @@ class KNNDataManager {
     return;
   }
   void DiscardShard(const int id) {
+    lock_guard<mutex> local_lock(mtx_);
     active_ids_.erase(id);
     vecs_data_.erase(id);
     knngs_data_.erase(id);
@@ -143,6 +150,7 @@ class KNNDataManager {
       cerr << "GetVectors failed: ID " << id << " is not active" << endl;
       exit(-1);
     }
+    lock_guard<mutex> local_lock(mtx_);
     return vecs_data_[id].get();
   }
   const NNDElement *GetKNNGraph(const int id) {
@@ -150,6 +158,7 @@ class KNNDataManager {
       cerr << "GetVectors failed: ID " << id << " is not active" << endl;
       exit(-1);
     }
+    lock_guard<mutex> local_lock(mtx_);
     if (knngs_data_.find(id) == knngs_data_.end()) {
       NNDElement *knn_graph;
       int k = 0;
