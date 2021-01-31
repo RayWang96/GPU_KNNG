@@ -249,6 +249,38 @@ EXIT:
   return cnt;
 }
 
+__device__ int MergeListWithoutLargeInt(int *A, const int m, int *B,
+                                        const int n, int *C) {
+  int i = 0, j = 0, cnt = 0;
+  while ((i < m) && (j < n)) {
+    if (A[i] <= B[j]) {
+      if (A[i] >= LARGE_INT) goto EXIT;
+      C[cnt++] = A[i++];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    } else {
+      if (B[j] >= LARGE_INT) goto EXIT;
+      C[cnt++] = B[j++];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    }
+  }
+
+  if (i == m) {
+    for (; j < n; j++) {
+      if (B[j] >= LARGE_INT) goto EXIT;
+      C[cnt++] = B[j];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    }
+  } else {
+    for (; i < m; i++) {
+      if (A[i] >= LARGE_INT) goto EXIT;
+      C[cnt++] = A[i];
+      if (cnt >= NEIGHB_NUM_PER_LIST) goto EXIT;
+    }
+  }
+EXIT:
+  return cnt;
+}
+
 __device__ int RemoveDuplicates(int *nums, int nums_size) {
   if (nums_size < 2) return nums_size;
   int a = 0, b = 1;
@@ -405,11 +437,15 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     BitonicSort(&sort_elem, lane_id);
     sorted_elements_cache[lane_id] = sort_elem;
     if (lane_id == 0) {
-      list_new_size =
-          MergeList(new_elements_cache, list_new_size, sorted_elements_cache,
-                    WARP_SIZE, merged_list_cache);
+      list_new_size = MergeListWithoutLargeInt(
+          new_elements_cache, list_new_size, sorted_elements_cache, WARP_SIZE,
+          merged_list_cache);
     }
     list_new_size = __shfl_sync(FULL_MASK, list_new_size, 0);
+    if (list_new_size > 56) {
+      printf("check %d\n", list_new_size);
+      assert(false);
+    }
     int copy_it_num = GetItNum(list_new_size, WARP_SIZE);
     for (int j = 0; j < copy_it_num; j++) {
       int pos = j * WARP_SIZE + lane_id;
@@ -426,9 +462,9 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
     BitonicSort(&sort_elem, lane_id);
     sorted_elements_cache[lane_id] = sort_elem;
     if (lane_id == 0) {
-      list_old_size =
-          MergeList(old_elements_cache, list_old_size, sorted_elements_cache,
-                    WARP_SIZE, merged_list_cache);
+      list_old_size = MergeListWithoutLargeInt(
+          old_elements_cache, list_old_size, sorted_elements_cache, WARP_SIZE,
+          merged_list_cache);
     }
     list_old_size = __shfl_sync(FULL_MASK, list_old_size, 0);
     copy_it_num = GetItNum(list_old_size, WARP_SIZE);
@@ -441,9 +477,7 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
   __syncthreads();
   if (tx == 0) {
     newg_list_size = RemoveDuplicates(new_elements_cache, list_new_size);
-    newg_list_size -= (new_elements_cache[newg_list_size - 1] == LARGE_INT);
     oldg_list_size = RemoveDuplicates(old_elements_cache, list_old_size);
-    oldg_list_size -= (old_elements_cache[oldg_list_size - 1] == LARGE_INT);
     for (int i = 0; i < newg_list_size; i++) {
       for (int j = 0; j < oldg_list_size; j++) {
         if (new_elements_cache[i] == old_elements_cache[j]) {
@@ -478,6 +512,11 @@ __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
   oldg_list_size_dev[list_id] = oldg_list_size;
 }
 
+int GetMaxListSize(int *list_size_dev, const int g_size) {
+  thrust::device_ptr<int> dev_ptr = thrust::device_pointer_cast(list_size_dev);
+  return *thrust::max_element(dev_ptr, dev_ptr + g_size);
+}
+
 void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
                       int *newg_revlist_size_dev, int *graph_old_dev,
                       int *oldg_list_size_dev, int *oldg_revlist_size_dev,
@@ -487,9 +526,7 @@ void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
   cudaMemset(oldg_list_size_dev, 0, graph_size * sizeof(int));
   cudaMemset(newg_revlist_size_dev, 0, graph_size * sizeof(int));
   cudaMemset(oldg_revlist_size_dev, 0, graph_size * sizeof(int));
-  dim3 grid_size(graph_size);
-  dim3 block_size(32);
-  PrepareGraph<<<grid_size, block_size>>>(graph_new_dev, newg_list_size_dev,
+  PrepareGraph<<<graph_size, WARP_SIZE>>>(graph_new_dev, newg_list_size_dev,
                                           graph_old_dev, oldg_list_size_dev,
                                           knn_graph_dev, graph_size);
   cudaDeviceSynchronize();
@@ -499,7 +536,7 @@ void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
     cerr << "Prepare kernel failed." << endl;
     exit(-1);
   }
-  PrepareReverseGraph<<<grid_size, block_size>>>(
+  PrepareReverseGraph<<<graph_size, WARP_SIZE>>>(
       graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, graph_old_dev,
       oldg_list_size_dev, oldg_revlist_size_dev);
   cudaDeviceSynchronize();
@@ -509,7 +546,7 @@ void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
     cerr << "PrepareReverseGraph kernel failed." << endl;
     exit(-1);
   }
-  ShrinkGraph<<<grid_size, block_size>>>(
+  ShrinkGraph<<<graph_size, WARP_SIZE>>>(
       graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, graph_old_dev,
       oldg_list_size_dev, oldg_revlist_size_dev);
   cudaDeviceSynchronize();
@@ -1177,11 +1214,6 @@ int GetMaxListSize(const Graph &g) {
     res = max((int)list.size(), res);
   }
   return res;
-}
-
-int GetMaxListSize(int *list_size_dev, const int g_size) {
-  thrust::device_ptr<int> dev_ptr = thrust::device_pointer_cast(list_size_dev);
-  return *thrust::max_element(dev_ptr, dev_ptr + g_size);
 }
 
 float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,

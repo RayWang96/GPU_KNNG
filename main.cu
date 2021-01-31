@@ -55,10 +55,10 @@ void TestCUDANNDescent() {
   int k = 30;
   // string out_path = FileTool::GetOutPath();
 
-  // string base_path = "/home/hwang/data/sift1m/sift_base.fvecs";
-  // string out_path = "/home/hwang/data/result/sift1m_knng_k64.kgraph";
-  // string ground_truth_path =
-  //     "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
+  string base_path = "/home/hwang/data/sift1m/sift_base.fvecs";
+  string out_path = "/home/hwang/data/result/sift1m_knng_k64.kgraph";
+  string ground_truth_path =
+      "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
 
   // string base_path = "/home/hwang/data/sift5m/sift5m.fvecs";
   // string out_path = "/home/hwang/data/result/sift5m_knng_k64.txt";
@@ -72,10 +72,10 @@ void TestCUDANNDescent() {
   // string ground_truth_path =
   //     "/home/hwang/data/deep1m/deep1m_knngraph_k100.ivecs";
 
-  string base_path = "/home/hwang/data/sift10m/sift10m.fvecs";
-  string out_path = "/home/hwang/data/result/sift10m_knng_k64.kgraph";
-  string ground_truth_path =
-      "/home/hwang/data/sift10m/sift10m_head_1k_gt.ivecs";
+  // string base_path = "/home/hwang/data/sift10m/sift10m.fvecs";
+  // string out_path = "/home/hwang/data/result/sift10m_knng_k64.kgraph";
+  // string ground_truth_path =
+  //     "/home/hwang/data/sift10m/sift10m_head_1k_gt.ivecs";
 
   auto out = ofstream(out_path);
   if (!out.is_open()) {
@@ -368,7 +368,7 @@ void TestEvaluator() {
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
-  // TestCUDANNDescent();
+  TestCUDANNDescent();
   // TestDataManager();
   // cerr << xorshift64star(2434485) % 3333333 << endl;
   // TestConstructLargeKNNGraph();
@@ -377,7 +377,7 @@ int main() {
   // TestFileTools();
   // IvecsTxtToIVecs();
   // TestMemoryManager();
-  TestCUDAMerge();
+  // TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();
