@@ -342,16 +342,14 @@ void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
     }
 
     thread write_th([&data_manager, &result_first, out_data_path, i]() {
-      WriteGraph(out_data_path, result_first, data_manager.GetVecsNum(i),
-                 data_manager.GetK(), data_manager.GetBeginPosition(i));
-      delete[] result_first;
+      int vecs_num = data_manager.GetVecsNum(i);
+      int k = data_manager.GetK();
+      int begin_pos = data_manager.GetBeginPosition(i);
+      WriteGraph(out_data_path, result_first, vecs_num, k, begin_pos);
       data_manager.DiscardShard(i);
+      delete[] result_first;
     });
-    if (i == shards_num - 2) {
-      write_th.join();
-    } else {
-      write_th.detach();
-    }
+    write_th.join();
     float merge_time = merge_timer.end();
     cerr << "No. " << i << " mergers cost: " << merge_time << endl;
     cerr << "No. " << i << " avg. cost: " << merge_time / (shards_num - i - 1)
