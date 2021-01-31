@@ -9,6 +9,7 @@ using namespace xmuknn;
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 64;
 const int SAMPLE_NUM = 32;  // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
+const int MERGE_SAMPLE_NUM = 16;
 
 const int WARP_SIZE = 32;
 const int NEIGHB_BLOCKS_NUM =

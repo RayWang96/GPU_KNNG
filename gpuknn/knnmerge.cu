@@ -259,7 +259,7 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
       1e6;
   cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
   NNDescentForMerge(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
-                    vectors_first_size, 5);
+                    vectors_first_size, 8);
   cudaFree(vectors_dev);
 }
 
@@ -319,7 +319,7 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
                vectors_second_dev, vectors_second_size, true);
 
   NNDescentForMerge(knngraph_merged_dev, vectors_dev, merged_graph_size,
-                    VEC_DIM, vectors_first_size, 5);
+                    VEC_DIM, vectors_first_size, 8);
   cudaFree(vectors_dev);
 }
 }  // namespace gpuknn

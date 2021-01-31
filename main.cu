@@ -368,7 +368,7 @@ void TestEvaluator() {
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
-  TestCUDANNDescent();
+  // TestCUDANNDescent();
   // TestDataManager();
   // cerr << xorshift64star(2434485) % 3333333 << endl;
   // TestConstructLargeKNNGraph();
@@ -377,7 +377,7 @@ int main() {
   // TestFileTools();
   // IvecsTxtToIVecs();
   // TestMemoryManager();
-  // TestCUDAMerge();
+  TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();
