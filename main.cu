@@ -142,13 +142,13 @@ void TestCUDAMerge() {
   // string out_path = "/home/hwang/data/result/glove100k_knng_k64_merged.txt";
   // string ground_truth_path =
   //     "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
-  // string base_path = "/home/hwang/data/sift1m/sift1m.fvecs";
-  // string out_path = "/home/hwang/data/result/sift1m_knng_k64_merged.txt";
-  // string ground_truth_path =
-  //     "/home/hwang/data/sift1m/sift1m_gold_knn40_sorted.txt";
-  string base_path = "/home/hwang//data/sift10m/sift10m.fvecs";
-  string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
-  string ground_truth_path = "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
+  string base_path = "/home/hwang/data/sift1m/sift1m.fvecs";
+  string out_path = "/home/hwang/data/result/sift1m_knng_k64_merged.kgraph";
+  string ground_truth_path =
+      "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
+  // string base_path = "/home/hwang//data/sift10m/sift10m.fvecs";
+  // string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
+  // string ground_truth_path = "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
   float *vectors;
   int vecs_size, vecs_dim;
   FileTool::ReadBinaryVecs(base_path, &vectors, &vecs_size, &vecs_dim);
@@ -176,26 +176,25 @@ void TestCUDAMerge() {
   gpuknn::NNDescent(&knngraph_second_dev, vectors_second_dev,
                     vectors_second_size, vecs_dim);
   NNDElement *knngraph_merged_dev;
+  Timer merge_timer;
+  merge_timer.start();
   gpuknn::KNNMerge(&knngraph_merged_dev, vectors_first_dev, vectors_first_size,
                    knngraph_first_dev, vectors_second_dev, vectors_second_size,
                    knngraph_second_dev, true);
-
-  vector<vector<NNDElement>> knngraph_host;
-  // ToHostKNNGraph(&knngraph_host, knngraph_first_dev, vectors_first_size,
-  //                NEIGHB_NUM_PER_LIST);
-  // OutputHostKNNGraph(knngraph_host,
-  //                    "/home/hwang/codes/GPU_KNNG/results/graph_a.txt");
-  // ToHostKNNGraph(&knngraph_host, knngraph_second_dev, vectors_second_size,
-  //                NEIGHB_NUM_PER_LIST);
-  // OutputHostKNNGraph(knngraph_host,
-  //                    "/home/hwang/codes/GPU_KNNG/results/graph_b.txt");
-  ToHostKNNGraph(&knngraph_host, knngraph_merged_dev,
+  cerr << "Merge costs: " << merge_timer.end() << endl;
+  NNDElement *result_graph_host;
+  ToHostKNNGraph(&result_graph_host, knngraph_merged_dev,
                  vectors_first_size + vectors_second_size, NEIGHB_NUM_PER_LIST);
-  OutputHostKNNGraph(knngraph_host, out_path);
-  Evaluate(out_path, ground_truth_path);
+  FileTool::WriteBinaryVecs(out_path, result_graph_host,
+                            vectors_first_size + vectors_second_size,
+                            NEIGHB_NUM_PER_LIST);
+  cerr << Evaluate(out_path, ground_truth_path, 1) << endl;
+  cerr << Evaluate(out_path, ground_truth_path, 10) << endl;
   cudaFree(knngraph_merged_dev);
   cudaFree(knngraph_first_dev);
   cudaFree(knngraph_second_dev);
+
+  delete[] result_graph_host;
   delete[] vectors;
   delete[] vectors_first;
   delete[] vectors_second;
@@ -372,13 +371,13 @@ int main() {
   // TestCUDANNDescent();
   // TestDataManager();
   // cerr << xorshift64star(2434485) % 3333333 << endl;
-  TestConstructLargeKNNGraph();
+  // TestConstructLargeKNNGraph();
   // TestEvaluator();
   // TxtToIVecs();
   // TestFileTools();
   // IvecsTxtToIVecs();
   // TestMemoryManager();
-  // TestCUDAMerge();
+  TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();

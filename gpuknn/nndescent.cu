@@ -96,6 +96,74 @@ __global__ void PrepareGraph(int *graph_new_dev, int *newg_list_size_dev,
   __syncthreads();
 }
 
+__global__ void PrepareGraphForMerge(int *graph_new_dev,
+                                     int *newg_list_size_dev,
+                                     int *graph_old_dev,
+                                     int *oldg_list_size_dev,
+                                     NNDElement *knn_graph, int split_pos,
+                                     int graph_size) {
+  __shared__ int new_elements_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ int cache1_size;
+  __shared__ int old_elements_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ int cache2_size;
+  int list_id = blockIdx.x;
+  int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  int nn_list_base_pos = list_id * (SAMPLE_NUM * 2);
+  int tx = threadIdx.x;
+  if (tx == 0) {
+    cache1_size = cache2_size = 0;
+  }
+  __syncthreads();
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int nth = i * WARP_SIZE + tx;
+    int local_pos =
+        nth % NEIGHB_BLOCKS_NUM * WARP_SIZE + nth / NEIGHB_BLOCKS_NUM;
+    if (local_pos < NEIGHB_NUM_PER_LIST) {
+      NNDElement elem = knn_graph[knng_base_pos + local_pos];
+      if (elem.IsNew()) {
+        int pos = atomicAdd(&cache1_size, 1);
+        new_elements_cache[pos] = elem.label();
+      } else {
+        if (list_id < split_pos) {
+          if (elem.label() >= split_pos) {
+            continue;
+          }
+        } else if (list_id >= split_pos) {
+          if (elem.label() < split_pos) {
+            continue;
+          }
+        }
+        int pos = atomicAdd(&cache2_size, 1);
+        old_elements_cache[pos] = elem.label();
+      }
+    }
+  }
+  __syncthreads();
+  if (tx == 0) {
+    cache1_size = min(cache1_size, SAMPLE_NUM);
+    cache2_size = min(cache2_size, SAMPLE_NUM);
+  }
+  __syncthreads();
+  if (tx == 0) {
+    newg_list_size_dev[list_id] = cache1_size;
+    oldg_list_size_dev[list_id] = cache2_size;
+  }
+  it_num = GetItNum(SAMPLE_NUM, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * WARP_SIZE + tx;
+    if (local_pos < cache1_size) {
+      graph_new_dev[nn_list_base_pos + local_pos] =
+          new_elements_cache[local_pos];
+    }
+    if (local_pos < cache2_size) {
+      graph_old_dev[nn_list_base_pos + local_pos] =
+          old_elements_cache[local_pos];
+    }
+  }
+  __syncthreads();
+}
+
 template <typename T>
 __device__ void Swap(T &a, T &b) {
   T c = a;
@@ -244,6 +312,63 @@ __global__ void PrepareReverseGraph(int *graph_new_dev, int *newg_list_size_dev,
   }
 }
 
+__global__ void PrepareReverseGraphForMerge(
+    int *graph_new_dev, int *newg_list_size_dev, int *newg_revlist_size_dev,
+    int *graph_old_dev, int *oldg_list_size_dev, int *oldg_revlist_size_dev,
+    const int split_pos) {
+  __shared__ int new_elements_cache[SAMPLE_NUM];
+  __shared__ int cache1_size;
+  __shared__ int old_elements_cache[SAMPLE_NUM];
+  __shared__ int cache2_size;
+  int tx = threadIdx.x;
+  int list_id = blockIdx.x;
+  int knng_base_pos = list_id * NEIGHB_NUM_PER_LIST;
+  int nn_list_base_pos = list_id * (SAMPLE_NUM * 2);
+  if (tx == 0) {
+    cache1_size = newg_list_size_dev[list_id];
+    cache2_size = oldg_list_size_dev[list_id];
+  }
+  __syncthreads();
+  int it_num = GetItNum(SAMPLE_NUM, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * WARP_SIZE + tx;
+    if (local_pos < cache1_size) {
+      new_elements_cache[local_pos] =
+          graph_new_dev[nn_list_base_pos + local_pos];
+    }
+    if (local_pos < cache2_size) {
+      old_elements_cache[local_pos] =
+          graph_old_dev[nn_list_base_pos + local_pos];
+    }
+  }
+  __syncthreads();
+  it_num = GetItNum(SAMPLE_NUM, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int local_pos = i * WARP_SIZE + tx;
+    if (local_pos < cache1_size) {
+      int rev_list_id = new_elements_cache[local_pos];
+      if (list_id < split_pos && rev_list_id >= split_pos) continue;
+      int pos = SAMPLE_NUM;
+      pos += atomicAdd(&newg_revlist_size_dev[rev_list_id], 1);
+      // printf("%d %d %d\n", pos, rev_list_id, list_id);
+      if (pos >= SAMPLE_NUM * 2)
+        atomicExch(&newg_revlist_size_dev[rev_list_id], SAMPLE_NUM);
+      else
+        graph_new_dev[rev_list_id * (SAMPLE_NUM * 2) + pos] = list_id;
+    }
+    if (local_pos < cache2_size) {
+      int rev_list_id = old_elements_cache[local_pos];
+      if (list_id >= split_pos && rev_list_id < split_pos) continue;
+      int pos = SAMPLE_NUM;
+      pos += atomicAdd(&oldg_revlist_size_dev[rev_list_id], 1);
+      if (pos >= SAMPLE_NUM * 2)
+        atomicExch(&oldg_revlist_size_dev[rev_list_id], SAMPLE_NUM);
+      else
+        graph_old_dev[rev_list_id * (SAMPLE_NUM * 2) + pos] = list_id;
+    }
+  }
+}
+
 __global__ void ShrinkGraph(int *graph_new_dev, int *newg_list_size_dev,
                             int *newg_revlist_size_dev, int *graph_old_dev,
                             int *oldg_list_size_dev,
@@ -374,6 +499,62 @@ void PrepareForUpdate(int *graph_new_dev, int *newg_list_size_dev,
     cerr << "Prepare kernel failed." << endl;
     exit(-1);
   }
+  PrepareReverseGraph<<<grid_size, block_size>>>(
+      graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, graph_old_dev,
+      oldg_list_size_dev, oldg_revlist_size_dev);
+  cudaDeviceSynchronize();
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "PrepareReverseGraph kernel failed." << endl;
+    exit(-1);
+  }
+  ShrinkGraph<<<grid_size, block_size>>>(
+      graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, graph_old_dev,
+      oldg_list_size_dev, oldg_revlist_size_dev);
+  cudaDeviceSynchronize();
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "ShrinkGraph kernel failed." << endl;
+    exit(-1);
+  }
+  auto end = chrono::steady_clock::now();
+  if (VERBOSE) {
+    cerr << "Prepare kernel costs: "
+         << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+                    .count() /
+                1e6
+         << endl;
+  }
+}
+
+void PrepareForUpdateForMerge(int *graph_new_dev, int *newg_list_size_dev,
+                              int *newg_revlist_size_dev, int *graph_old_dev,
+                              int *oldg_list_size_dev,
+                              int *oldg_revlist_size_dev,
+                              NNDElement *knn_graph_dev, int split_pos,
+                              int graph_size) {
+  auto start = chrono::steady_clock::now();
+  cudaMemset(newg_list_size_dev, 0, graph_size * sizeof(int));
+  cudaMemset(oldg_list_size_dev, 0, graph_size * sizeof(int));
+  cudaMemset(newg_revlist_size_dev, 0, graph_size * sizeof(int));
+  cudaMemset(oldg_revlist_size_dev, 0, graph_size * sizeof(int));
+  dim3 grid_size(graph_size);
+  dim3 block_size(32);
+  PrepareGraphForMerge<<<grid_size, block_size>>>(
+      graph_new_dev, newg_list_size_dev, graph_old_dev, oldg_list_size_dev,
+      knn_graph_dev, split_pos, graph_size);
+  cudaDeviceSynchronize();
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "Prepare kernel failed." << endl;
+    exit(-1);
+  }
+  // PrepareReverseGraphForMerge<<<grid_size, block_size>>>(
+  //     graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, graph_old_dev,
+  //     oldg_list_size_dev, oldg_revlist_size_dev, split_pos);
   PrepareReverseGraph<<<grid_size, block_size>>>(
       graph_new_dev, newg_list_size_dev, newg_revlist_size_dev, graph_old_dev,
       oldg_list_size_dev, oldg_revlist_size_dev);
@@ -1342,9 +1523,9 @@ void MergeBlocksInNNLists(NNDElement *knn_graph, const int graph_size) {
 }
 
 namespace gpuknn {
-void NNDescentRefine(NNDElement *knngraph_dev, const float *vectors_dev,
-                     const int vecs_size, const int vecs_dim,
-                     const int iteration) {
+void NNDescentForMerge(NNDElement *knngraph_dev, const float *vectors_dev,
+                       const int vecs_size, const int vecs_dim,
+                       const int split_pos, const int iteration) {
   int k = NEIGHB_NUM_PER_LIST;
   int *graph_new_dev, *newg_list_size_dev, *graph_old_dev, *oldg_list_size_dev;
   int *newg_revlist_size_dev, *oldg_revlist_size_dev;
@@ -1377,9 +1558,10 @@ void NNDescentRefine(NNDElement *knngraph_dev, const float *vectors_dev,
     }
     // Should be removed after testing.
     auto start = chrono::steady_clock::now();
-    PrepareForUpdate(graph_new_dev, newg_list_size_dev, newg_revlist_size_dev,
-                     graph_old_dev, oldg_list_size_dev, oldg_revlist_size_dev,
-                     knngraph_dev, graph_size);
+    PrepareForUpdateForMerge(graph_new_dev, newg_list_size_dev,
+                             newg_revlist_size_dev, graph_old_dev,
+                             oldg_list_size_dev, oldg_revlist_size_dev,
+                             knngraph_dev, split_pos, graph_size);
     auto end = chrono::steady_clock::now();
     float tmp_time =
         (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
