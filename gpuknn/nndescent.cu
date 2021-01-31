@@ -1358,7 +1358,7 @@ void NNDescentRefine(NNDElement *knngraph_dev, const float *vectors_dev,
   cudaMalloc(&oldg_list_size_dev, (size_t)graph_size * sizeof(int));
   cudaMalloc(&oldg_revlist_size_dev, (size_t)graph_size * sizeof(int));
   Graph result(vecs_size);
-  InitRandomKNNGraph(knngraph_dev, graph_size, vectors_dev, false);
+  InitRandomKNNGraph(knngraph_dev, graph_size, vectors_dev, false, false);
   auto cuda_status = cudaGetLastError();
   if (cuda_status != cudaSuccess) {
     cerr << cudaGetErrorString(cuda_status) << endl;
