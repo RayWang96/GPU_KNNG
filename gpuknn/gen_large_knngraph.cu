@@ -242,7 +242,8 @@ void PreProcID(NNDElement *result_knn_graph_host, const int first_graph_size,
 
 void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
                       const int k) {
-  KNNDataManager data_manager(vecs_data_path);
+  assert(k == NEIGHB_NUM_PER_LIST);
+  KNNDataManager data_manager(vecs_data_path, k, 3, 9100000);
   assert(data_manager.GetDim() == VEC_DIM);
   data_manager.CheckStatus();
   Timer knn_timer;
@@ -250,6 +251,7 @@ void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
   BuildEachShard(data_manager, out_data_path);
   cerr << "Building shards costs: " << knn_timer.end() << endl;
   int shards_num = data_manager.GetShardsNum();
+  mutex mtx;
   for (int i = 0; i < shards_num - 1; i++) {
     Timer merge_timer;
     merge_timer.start();
@@ -326,17 +328,20 @@ void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
       cudaFree(result_second_dev);
       cudaFree(result_knn_graph_dev);
       cerr << "Update graph costs: " << update_graph_timer.end() << endl;
-      thread write_th([&result_second_dev, &result_second, &data_manager, j,
-                       &out_data_path]() {
+      int vecs_num = data_manager.GetVecsNum(j);
+      int k = data_manager.GetK();
+      int begin_pos = data_manager.GetBeginPosition(j);
+      data_manager.DiscardShard(j);
+      thread write_th([&result_second_dev, &result_second, vecs_num, k,
+                       begin_pos, j, &out_data_path, &mtx]() {
         // Timer timer;
         // timer.start();
         Timer write_graph_timer;
         write_graph_timer.start();
-        WriteGraph(out_data_path, result_second, data_manager.GetVecsNum(j),
-                   data_manager.GetK(), data_manager.GetBeginPosition(j));
+        WriteGraph(out_data_path, result_second, vecs_num,
+                   k, begin_pos);
         delete[] result_second;
-        data_manager.DiscardShard(j);
-        // cout << "Updating KNN graph costs: " << timer.end() << endl;
+        cout << "Write KNN graph costs: " << write_graph_timer.end() << endl;
       });
       write_th.detach();
     }

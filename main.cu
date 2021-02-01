@@ -345,8 +345,8 @@ void IvecsTxtToIVecs() {
 }
 
 void TestEvaluator() {
-  string result_path = "/home/hwang/ssd_data/result/kgraphs/sift10m.kgraph";
-  string gt_path = "/home/hwang/ssd_data/sift10m/sift10m_head_1k_gt.ivecs";
+  string result_path = "/home/hwang/ssd_data/result/deep100m.kgraph";
+  string gt_path = "/home/hwang/ssd_data/deep100m/deep100m_head_1k_gt.ivecs";
 
   // NNDElement *tmp;
   // int num = 1000, dim;
@@ -371,13 +371,13 @@ int main() {
   // TestCUDANNDescent();
   // TestDataManager();
   // cerr << xorshift64star(2434485) % 3333333 << endl;
-  // TestConstructLargeKNNGraph();
+  TestConstructLargeKNNGraph();
   // TestEvaluator();
   // TxtToIVecs();
   // TestFileTools();
   // IvecsTxtToIVecs();
   // TestMemoryManager();
-  TestCUDAMerge();
+  // TestCUDAMerge();
   // TestTiledDistanceCompare();
   // TestCUDADistance();
   // TestCUDASearch();
