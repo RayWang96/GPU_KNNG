@@ -21,11 +21,11 @@ __global__ void CopySecondHalfToKNNGraph(NNDElement *knngraph,
                                          const NNDElement *knngraph_second,
                                          const int knngraph_second_size,
                                          const int *random_knngraph) {
-  int list_id = blockIdx.x;
+  size_t list_id = blockIdx.x;
   int tx = threadIdx.x;
   int lane_id = tx % WARP_SIZE;
-  int knngraph_pos_base = list_id * NEIGHB_NUM_PER_LIST;
-  int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
+  size_t knngraph_pos_base = list_id * NEIGHB_NUM_PER_LIST;
+  size_t rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
 
   if (list_id < knngraph_first_size) {
     if (tx < WARP_SIZE) {
@@ -49,7 +49,7 @@ __global__ void CopySecondHalfToKNNGraph(NNDElement *knngraph,
       }
     }
   } else {
-    int knngraph_second_pos_base =
+    size_t knngraph_second_pos_base =
         (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
     rand_knngraph_pos_base =
         (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
@@ -84,8 +84,8 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
   __shared__ NNDElement knnlist_cache[NEIGHB_NUM_PER_LIST];
   __shared__ int blocks_size[NEIGHB_BLOCKS_NUM];
   __shared__ int current_block_id;
-  int list_id = blockIdx.x;
-  int global_pos_base = list_id * NEIGHB_NUM_PER_LIST;
+  size_t list_id = blockIdx.x;
+  size_t global_pos_base = list_id * NEIGHB_NUM_PER_LIST;
   int merged_size = knngraph_first_size + knngraph_second_size;
   int tx = threadIdx.x;
   if (tx < NEIGHB_BLOCKS_NUM) {
@@ -108,7 +108,7 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
       }
     }
   } else {
-    int knngraph_second_pos_base =
+    size_t knngraph_second_pos_base =
         (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
     int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
     for (int i = 0; i < it_num; i++) {
@@ -219,18 +219,36 @@ void MergeVectors(float **vectors_dev_ptr, float *vectors_first_dev,
   float *&vectors_dev = *vectors_dev_ptr;
   int merged_size = vectors_first_size + vectors_second_size;
   cudaMalloc(&vectors_dev, (size_t)merged_size * VEC_DIM * sizeof(float));
-  cudaMemcpyAsync(vectors_dev, vectors_first_dev,
-                  (size_t)vectors_first_size * VEC_DIM * sizeof(float),
-                  cudaMemcpyDeviceToDevice);
+  auto cuda_status_tmp = cudaGetLastError();
+  if (cuda_status_tmp != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status_tmp) << endl;
+    cerr << "Merge vectors 0 failed" << endl;
+    exit(-1);
+  }
+  cudaMemcpy(vectors_dev, vectors_first_dev,
+             (size_t)vectors_first_size * VEC_DIM * sizeof(float),
+             cudaMemcpyDeviceToDevice);
   if (free_sub_data) {
     cudaFree(vectors_first_dev);
   }
-  cudaMemcpyAsync(vectors_dev + (size_t)vectors_first_size * VEC_DIM,
-                  vectors_second_dev,
-                  (size_t)vectors_second_size * VEC_DIM * sizeof(float),
-                  cudaMemcpyDeviceToDevice);
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "Merge vectors 1 failed" << endl;
+    exit(-1);
+  }
+  cudaMemcpy(vectors_dev + (size_t)vectors_first_size * VEC_DIM,
+             vectors_second_dev,
+             (size_t)vectors_second_size * VEC_DIM * sizeof(float),
+             cudaMemcpyDeviceToDevice);
   if (free_sub_data) {
     cudaFree(vectors_second_dev);
+  }
+  cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "Merge vectors 2 failed" << endl;
+    exit(-1);
   }
 }
 
@@ -259,7 +277,7 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
       1e6;
   cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
   NNDescentForMerge(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
-                    vectors_first_size, 9);
+                    vectors_first_size, MERGE_ITERATION);
   cudaFree(vectors_dev);
 }
 
@@ -270,7 +288,6 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
                       const int vectors_second_size,
                       const NNDElement *knngraph_second) {
   NNDElement *&knngraph_merged_dev = *knngraph_merged_dev_ptr;
-  float *vectors_dev;
   int merged_graph_size = vectors_first_size + vectors_second_size;
   NNDElement *knngraph_first_dev, *knngraph_second_dev;
   cudaMalloc(&knngraph_first_dev, (size_t)vectors_first_size *
@@ -302,24 +319,19 @@ void KNNMergeFromHost(NNDElement **knngraph_merged_dev_ptr,
                        vectors_first_size, knngraph_second_dev,
                        vectors_second_size, true);
 
-  float *vectors_first_dev, *vectors_second_dev;
-  cudaMalloc(&vectors_first_dev,
-             (size_t)vectors_first_size * VEC_DIM * sizeof(float));
-  cudaMalloc(&vectors_second_dev,
-             (size_t)vectors_second_size * VEC_DIM * sizeof(float));
-  cudaMemcpy(vectors_first_dev, vectors_first,
+  float *vectors_dev;
+  cudaMalloc(&vectors_dev, (size_t)(vectors_first_size + vectors_second_size) *
+                               VEC_DIM * sizeof(float));
+  cudaMemcpy(vectors_dev, vectors_first,
              (size_t)vectors_first_size * VEC_DIM * sizeof(float),
              cudaMemcpyHostToDevice);
-  cudaMemcpy(vectors_second_dev, vectors_second,
+  cudaMemcpy(vectors_dev + (size_t)vectors_first_size * VEC_DIM, vectors_second,
              (size_t)vectors_second_size * VEC_DIM * sizeof(float),
              cudaMemcpyHostToDevice);
 
   // Dev. ptrs are freed inside the function.
-  MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
-               vectors_second_dev, vectors_second_size, true);
-
   NNDescentForMerge(knngraph_merged_dev, vectors_dev, merged_graph_size,
-                    VEC_DIM, vectors_first_size, 9);
+                    VEC_DIM, vectors_first_size, MERGE_ITERATION);
   cudaFree(vectors_dev);
 }
 }  // namespace gpuknn

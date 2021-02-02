@@ -243,12 +243,12 @@ void PreProcID(NNDElement *result_knn_graph_host, const int first_graph_size,
 void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
                       const int k) {
   assert(k == NEIGHB_NUM_PER_LIST);
-  KNNDataManager data_manager(vecs_data_path, k, 3, 9100000);
+  KNNDataManager data_manager(vecs_data_path, k, 3, 10000000);
   assert(data_manager.GetDim() == VEC_DIM);
   data_manager.CheckStatus();
   Timer knn_timer;
   knn_timer.start();
-  BuildEachShard(data_manager, out_data_path);
+  // BuildEachShard(data_manager, out_data_path);
   cerr << "Building shards costs: " << knn_timer.end() << endl;
   int shards_num = data_manager.GetShardsNum();
   mutex mtx;

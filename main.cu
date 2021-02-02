@@ -87,7 +87,8 @@ void TestCUDANNDescent() {
   int vecs_size, vecs_dim;
   // FileTool::ReadTxtVecs(vectors, vecs_size, vecs_dim, base_path);
   FileTool::ReadBinaryVecs(base_path, &vectors, &vecs_size, &vecs_dim);
-  auto knn_graph = gpuknn::NNDescent(vectors, vecs_size, vecs_dim, 6);
+  auto knn_graph =
+      gpuknn::NNDescent(vectors, vecs_size, vecs_dim, NND_ITERATION);
 
   NNDElement *result_graph =
       new NNDElement[(size_t)knn_graph.size() * knn_graph[0].size()];
