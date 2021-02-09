@@ -278,13 +278,13 @@ void TestConstructLargeKNNGraph() {
 
   string ref_path = "/home/hwang/ssd_data/deep100m/deep100m";
   string result_path = "/home/hwang/ssd_data/result/deep100m.kgraph";
-
+  string gt_path = "/home/hwang/ssd_data/deep100m/deep100m_head_1k_gt.ivecs";
   Timer timer;
   timer.start();
   GenLargeKNNGraph(ref_path, result_path, 64);
   cerr << "Time costs: " << timer.end() << endl;
-  // cerr << "Recall@1:  " << EvaluateHead(result_path, gt_path, 1) << endl;
-  // cerr << "Recall@10: " << EvaluateHead(result_path, gt_path, 10) << endl;
+  cerr << "Recall@1:  " << EvaluateHead(result_path, gt_path, 1) << endl;
+  cerr << "Recall@10: " << EvaluateHead(result_path, gt_path, 10) << endl;
 
   // ToTxtResult(result_path, result_path + ".txt");
 }
@@ -369,10 +369,10 @@ void TestEvaluator() {
 int main() {
   // UnitTest();
   // TestKNNAlgorithm();
-  // TestCUDANNDescent();
+  TestCUDANNDescent();
   // TestDataManager();
   // cerr << xorshift64star(2434485) % 3333333 << endl;
-  TestConstructLargeKNNGraph();
+  // TestConstructLargeKNNGraph();
   // TestEvaluator();
   // TxtToIVecs();
   // TestFileTools();

@@ -20,6 +20,7 @@
 
 #include "../tools/distfunc.hpp"
 #include "../tools/nndescent_element.cuh"
+#include "../tools/timer.hpp"
 #include "../xmuknn.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -1999,14 +2000,11 @@ vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
              cudaMemcpyHostToDevice);
   NNDElement *knn_graph_dev;
 
-  auto start = chrono::steady_clock::now();
+  Timer nnd_timer;
+  nnd_timer.start();
   NNDescent(&knn_graph_dev, vectors_dev, vecs_size, vecs_dim, iteration);
   auto end = chrono::steady_clock::now();
-  cerr << "GPU NNDescent costs: "
-       << (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
-                  .count() /
-              1e6
-       << endl;
+  cerr << "GPU NNDescent costs: " << nnd_timer.end() << endl;
   vector<vector<NNDElement>> g;
   ToHostKNNGraph(&g, knn_graph_dev, vecs_size, k);  // 0.6 / 6.6
   cudaFree(vectors_dev);

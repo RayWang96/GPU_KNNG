@@ -248,7 +248,7 @@ void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
   data_manager.CheckStatus();
   Timer knn_timer;
   knn_timer.start();
-  // BuildEachShard(data_manager, out_data_path);
+  BuildEachShard(data_manager, out_data_path);
   cerr << "Building shards costs: " << knn_timer.end() << endl;
   int shards_num = data_manager.GetShardsNum();
   mutex mtx;
@@ -272,7 +272,8 @@ void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
           data_manager.GetVectors(j), data_manager.GetVecsNum(j),
           data_manager.GetKNNGraph(j));
       cout << "Merge costs: " << timer.end() << endl;
-
+      mtx.lock();
+      mtx.unlock();
       Timer update_graph_timer;
       update_graph_timer.start();
       ReadGraph(out_data_path, &result_second, data_manager.GetBeginPosition(j),
@@ -336,11 +337,13 @@ void GenLargeKNNGraph(const string &vecs_data_path, const string &out_data_path,
                        begin_pos, j, &out_data_path, &mtx]() {
         // Timer timer;
         // timer.start();
+        mtx.lock();
         Timer write_graph_timer;
         write_graph_timer.start();
         WriteGraph(out_data_path, result_second, vecs_num,
                    k, begin_pos);
         delete[] result_second;
+        mtx.unlock();
         cout << "Write KNN graph costs: " << write_graph_timer.end() << endl;
       });
       write_th.detach();
