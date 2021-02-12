@@ -55,10 +55,10 @@ void TestCUDANNDescent() {
   int k = 30;
   // string out_path = FileTool::GetOutPath();
 
-  string base_path = "/home/hwang/data/sift1m/sift_base.fvecs";
-  string out_path = "/home/hwang/data/result/sift1m_knng_k64.kgraph";
-  string ground_truth_path =
-      "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
+  // string base_path = "/home/hwang/data/sift1m/sift_base.fvecs";
+  // string out_path = "/home/hwang/data/result/sift1m_knng_k64.kgraph";
+  // string ground_truth_path =
+  //     "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
 
   // string base_path = "/home/hwang/data/sift5m/sift5m.fvecs";
   // string out_path = "/home/hwang/data/result/sift5m_knng_k64.txt";
@@ -66,6 +66,11 @@ void TestCUDANNDescent() {
   //     "/home/hwang/data/sift1m/sift1m_gold_knn40_sorted.txt";
 
   // /home/hwang/data/deep1m/deep1m_knngraph_k100.ivecs
+
+  string base_path = "/home/hwang/data/glove1m/glove1m_norm_base.fvecs";
+  string out_path = "/home/hwang/data/result/glove1m_knng_k64.kgraph";
+  string ground_truth_path =
+      "/home/hwang/data/glove1m/glove1m_gold_knn40.ivecs";
 
   // string base_path = "/home/hwang/data/deep1m/deep1m.fvecs";
   // string out_path = "/home/hwang/data/result/deep1m_k64.kgraph";
@@ -139,14 +144,14 @@ void TestCUDAMerge() {
   // string out_path = "/home/hwang/data/result/sift100k_knng_k64_merged.txt";
   // string ground_truth_path =
   //     "/home/hwang//data/sift100k/sift100k_groundtruth_self.txt";
-  // string base_path = "/home/hwang/data/glove100k/glove100k_norm_base.txt";
-  // string out_path = "/home/hwang/data/result/glove100k_knng_k64_merged.txt";
-  // string ground_truth_path =
-  //     "/home/hwang/data/glove100k/glove100k_self_ground_truth.txt";
-  string base_path = "/home/hwang/data/sift1m/sift1m.fvecs";
-  string out_path = "/home/hwang/data/result/sift1m_knng_k64_merged.kgraph";
+  string base_path = "/home/hwang/data/glove1m/glove1m_norm_base.fvecs";
+  string out_path = "/home/hwang/data/result/glove1m_knng_k64.kgraph";
   string ground_truth_path =
-      "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
+      "/home/hwang/data/glove1m/glove1m_gold_knn40.ivecs";
+  // string base_path = "/home/hwang/data/sift1m/sift1m.fvecs";
+  // string out_path = "/home/hwang/data/result/sift1m_knng_k64_merged.kgraph";
+  // string ground_truth_path =
+  //     "/home/hwang/data/sift1m/sift1m_knngraph_k40.ivecs";
   // string base_path = "/home/hwang//data/sift10m/sift10m.fvecs";
   // string out_path = "/home/hwang/data/result/sift10m_knng_k64.txt";
   // string ground_truth_path = "/home/hwang/data/sift10m/sift10m_gold_knn40.txt";
