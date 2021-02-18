@@ -191,22 +191,29 @@ void TestCUDAMerge() {
              cudaMemcpyHostToDevice);
 
   NNDElement *knngraph_first_dev, *knngraph_second_dev;
+  // gpuknn::NNDescent(&knngraph_first_dev, vectors_first_dev, vectors_first_size,
+  //                   vecs_dim);
+  // cudaMalloc(&knngraph_second_dev, (size_t)vectors_second_size *
+  //                                  NEIGHB_NUM_PER_LIST * sizeof(NNDElement));
+  // InitRandomKNNGraph(knngraph_second_dev, vectors_second_size, vectors_second_dev, true, false);
+  // NNDElement *knngraph_merged_dev;
+  // Timer merge_timer;
+  // merge_timer.start();
+  // gpuknn::KNNJMerge(&knngraph_merged_dev, vectors_first_dev, vectors_first_size,
+  //                  knngraph_first_dev, vectors_second_dev, vectors_second_size,
+  //                  knngraph_second_dev);
+
   gpuknn::NNDescent(&knngraph_first_dev, vectors_first_dev, vectors_first_size,
                     vecs_dim);
   gpuknn::NNDescent(&knngraph_second_dev, vectors_second_dev,
                     vectors_second_size, vecs_dim);
-  // cudaMalloc(&knngraph_second_dev, (size_t)vectors_second_size *
-  //                                  NEIGHB_NUM_PER_LIST * sizeof(NNDElement));
-  // InitRandomKNNGraph(knngraph_second_dev, vectors_second_size, vectors_second_dev, true, false);
   NNDElement *knngraph_merged_dev;
   Timer merge_timer;
   merge_timer.start();
   gpuknn::KNNMerge(&knngraph_merged_dev, vectors_first_dev, vectors_first_size,
                    knngraph_first_dev, vectors_second_dev, vectors_second_size,
                    knngraph_second_dev, true);
-  // gpuknn::KNNJMerge(&knngraph_merged_dev, vectors_first_dev, vectors_first_size,
-  //                  knngraph_first_dev, vectors_second_dev, vectors_second_size,
-  //                  knngraph_second_dev);
+
   cerr << "Merge costs: " << merge_timer.end() << endl;
   NNDElement *result_graph_host;
   ToHostKNNGraph(&result_graph_host, knngraph_merged_dev,
