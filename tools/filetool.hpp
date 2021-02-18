@@ -124,7 +124,7 @@ class FileTool {
       fseek(file_ptr, 0, SEEK_END);
       size_t file_size = ftell(file_ptr);
       int total_num = file_size / (size_t)(4 + dim * sizeof(T));
-      cerr << file_size << " " << total_num << " " << dim << endl;
+      // cerr << file_size << " " << total_num << " " << dim << endl;
       num = total_num;
       rewind(file_ptr);
       vectors = new T[(size_t)num * (size_t)dim];

@@ -1107,6 +1107,96 @@ __global__ void NewNeighborsCompareKernel(
   }
 }
 
+__global__ void NewNeighborsCompareKernelForHighDim(
+    NNDElement *knn_graph, int *global_locks, const float *vectors,
+    const int *graph_new, const int *size_new, const int num_new_max) {
+  extern __shared__ char buffer[];
+
+  __shared__ float *shared_vectors, *distances;
+  __shared__ int *neighbors;
+  __shared__ size_t gnew_base_pos;
+  __shared__ int num_new;
+
+  int tx = threadIdx.x;
+  if (tx == 0) {
+    shared_vectors = (float *)buffer;
+    size_t offset = num_new_max * MAX_SKEW_DIM * sizeof(float);
+    distances = (float *)((char *)buffer + offset);
+    neighbors = (int *)((char *)distances +
+                        (num_new_max * (num_new_max - 1) / 2) * sizeof(float));
+  }
+  __syncthreads();
+
+  size_t list_id = blockIdx.x;
+  int block_dim_x = blockDim.x;
+
+  if (tx == 0) {
+    gnew_base_pos = list_id * (SAMPLE_NUM * 2);
+  } else if (tx == 32) {
+    num_new = size_new[list_id];
+  }
+  __syncthreads();
+  int neighb_num = num_new;
+  if (tx < neighb_num) {
+    neighbors[tx] = graph_new[gnew_base_pos + tx];
+  }
+  __syncthreads();
+  int vec_block_num = GetItNum(VEC_DIM, MAX_DIM);
+  int calc_num = (neighb_num * (neighb_num - 1)) / 2;
+  int num_it = GetItNum(calc_num, block_dim_x);
+  int num_vec_per_it = block_dim_x / MAX_DIM;
+
+  for (int i = 0; i < num_it; i++) {
+    int no = i * block_dim_x + tx;
+    if (no >= calc_num) continue;
+    distances[no] = 0;
+  }
+  for (int bi = 0; bi < vec_block_num; bi++) {
+    int num_it = GetItNum(neighb_num, num_vec_per_it);
+    for (int i = 0; i < num_it; i++) {
+      int x = i * num_vec_per_it + tx / MAX_DIM;
+      if (x >= neighb_num) continue;
+      int y = tx % MAX_DIM;
+      size_t vec_id = neighbors[x];
+      shared_vectors[x * MAX_SKEW_DIM + y] = vectors[vec_id * VEC_DIM + bi * MAX_DIM + y];
+    }
+    __syncthreads();
+
+    num_it = GetItNum(calc_num, block_dim_x);
+    for (int i = 0; i < num_it; i++) {
+      int no = i * block_dim_x + tx;
+      if (no >= calc_num) continue;
+      int idx = no + 1;
+      int x = ceil(sqrt(2 * idx + 0.25) - 0.5);
+      if (x >= neighb_num) continue;
+      int y = idx - (x - 1) * x / 2 - 1;
+      if (y >= neighb_num) continue;
+      float sum = 0;
+      int base_x = x * MAX_SKEW_DIM;
+      int base_y = y * MAX_SKEW_DIM;
+      for (int j = 0; j < MAX_DIM; j++) {
+        float diff = shared_vectors[base_x + j] - shared_vectors[base_y + j];
+        sum += diff * diff;
+      }
+      distances[no] += sum;
+    }
+    __syncthreads();
+  }
+  // num_it = GetItNum(NEIGHB_NUM_PER_LIST, NEIGHB_CACHE_NUM);
+
+  int list_size = NEIGHB_CACHE_NUM;
+  int num_it3 = GetItNum(neighb_num, block_dim_x / WARP_SIZE);
+  for (int j = 0; j < num_it3; j++) {
+    int list_id = j * (block_dim_x / WARP_SIZE) + tx / WARP_SIZE;
+    if (list_id >= neighb_num) continue;
+    NNDElement min_elem =
+        GetMinElement(neighbors, list_id, list_size, distances, calc_num);
+    InsertToGlobalGraph(min_elem, list_id, neighbors[list_id], knn_graph,
+                        global_locks);
+  }
+}
+
+
 // blockDim.x = TILE_WIDTH * TILE_WIDTH;
 __device__ void GetNewOldDistancesTiled(float *distances, const float *vectors,
                                         const int *new_neighbors,
@@ -1434,9 +1524,24 @@ float UpdateGraph(NNDElement *origin_knn_graph_dev, const size_t g_size,
   auto start = chrono::steady_clock::now();
   MarkAllToOld<<<g_size, NEIGHB_NUM_PER_LIST>>>(origin_knn_graph_dev);
   if (calc_between_new_neighbs) {
-    NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
-        origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
-        newg_list_size_dev, num_new_max);
+    if (VEC_DIM < MAX_DIM) {
+      shared_memory_size =
+        num_new_max * SKEW_DIM * sizeof(float) +
+        (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
+        num_new_max * sizeof(int);
+      NewNeighborsCompareKernel<<<grid_size, block_size, shared_memory_size>>>(
+          origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
+          newg_list_size_dev, num_new_max);
+    } else {
+      shared_memory_size =
+        num_new_max * MAX_SKEW_DIM * sizeof(float) +
+        (num_new_max * (num_new_max - 1) / 2) * sizeof(float) +
+        num_new_max * sizeof(int);
+      cerr << shared_memory_size << endl;
+      NewNeighborsCompareKernelForHighDim<<<grid_size, VEC_DIM, shared_memory_size>>>(
+          origin_knn_graph_dev, global_locks_dev, vectors_dev, newg_dev,
+          newg_list_size_dev, num_new_max);
+    }
   }
   int neighb_num_max = num_new_max + num_old_max;
   block_size = dim3(TILE_WIDTH * TILE_WIDTH);
@@ -1694,8 +1799,8 @@ __global__ void SortKNNGraphKernel(NNDElement *knn_graph,
 
 void InitRandomKNNGraph(NNDElement *knn_graph_dev, const int graph_size,
                         const float *vectors_dev,
-                        bool start_from_random_index = true,
-                        bool using_thrust_random = true) {
+                        bool start_from_random_index,
+                        bool using_thrust_random) {
   auto start = chrono::steady_clock().now();
   if (start_from_random_index) {
     if (using_thrust_random) {

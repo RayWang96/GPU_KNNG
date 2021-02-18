@@ -15,7 +15,6 @@ float Evaluate(const string &result_path, const string &ground_truth_path,
   NNDElement *result_graph;
   int graph_size, k;
   FileTool::ReadBinaryVecs(result_path, &result_graph, &graph_size, &k);
-
   int *gt_graph;
   int gt_graph_size, gt_k;
   FileTool::ReadBinaryVecs(ground_truth_path, &gt_graph, &gt_graph_size, &gt_k);

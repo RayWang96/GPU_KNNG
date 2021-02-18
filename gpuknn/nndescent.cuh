@@ -6,13 +6,15 @@ using namespace std;
 using namespace xmuknn;
 
 #define LARGE_INT 0x3f3f3f3f
-const int VEC_DIM = 100;
-const int NEIGHB_NUM_PER_LIST = 96;
-const int NND_ITERATION = 12;
-const int SAMPLE_NUM = 10;  // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
-const int MERGE_SAMPLE_NUM = 10;
-const int MERGE_ITERATION = 8;
+const int VEC_DIM = 128;
+const int NEIGHB_NUM_PER_LIST = 64;
+const int NND_ITERATION = 6;
+const int SAMPLE_NUM = 32;  // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
+const int MERGE_SAMPLE_NUM = 12;
+const int MERGE_ITERATION = 11;
 
+const int MAX_DIM = 480; // 96 120 160 192 240 320 480 960
+const int MAX_SKEW_DIM = MAX_DIM + 1;
 const int WARP_SIZE = 32;
 const int NEIGHB_BLOCKS_NUM =
     NEIGHB_NUM_PER_LIST / 32 + (NEIGHB_NUM_PER_LIST % 32 != 0);
@@ -26,6 +28,10 @@ const int LAST_HALF_NEIGHB_NUM = NEIGHB_NUM_PER_LIST / 2;
 const int FIRST_HALF_NEIGHB_NUM =
     NEIGHB_NUM_PER_LIST - NEIGHB_NUM_PER_LIST / 2;
 __global__ void MarkAllToOld(NNDElement *knn_graph);
+void InitRandomKNNGraph(NNDElement *knn_graph_dev, const int graph_size,
+                        const float *vectors_dev,
+                        bool start_from_random_index = true,
+                        bool using_thrust_random = true);
 namespace gpuknn {
 void NNDescentForMerge(NNDElement *knngraph_result_dev_ptr,
                        const float *vectors_dev, const int vecs_size,
