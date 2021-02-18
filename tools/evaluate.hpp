@@ -34,6 +34,8 @@ float Evaluate(const string &result_path, const string &ground_truth_path,
       b.push_back(gt_graph[i * gt_k + j]);
     }
     c.resize(a.size() + b.size());
+    sort(a.begin(), a.end());
+    sort(b.begin(), b.end());
     int cnt =
         set_intersection(a.begin(), a.end(), b.begin(), b.end(), c.begin()) -
         c.begin();

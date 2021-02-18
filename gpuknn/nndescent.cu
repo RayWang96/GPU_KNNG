@@ -1904,6 +1904,96 @@ void MergeBlocksInNNLists(NNDElement *knn_graph, const int graph_size) {
 }
 
 namespace gpuknn {
+  
+void NNDescentRefine(NNDElement *knngraph_dev,
+                     const float *vectors_dev, const int vecs_size,
+                     const int vecs_dim, const int iteration) {
+  int k = NEIGHB_NUM_PER_LIST;
+  int *graph_new_dev, *newg_list_size_dev, *graph_old_dev, *oldg_list_size_dev;
+  int *newg_revlist_size_dev, *oldg_revlist_size_dev;
+  int graph_size = vecs_size;
+  cudaMalloc(&graph_new_dev,
+             (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int));
+  cudaMalloc(&newg_list_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&newg_revlist_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&graph_old_dev,
+             (size_t)graph_size * (SAMPLE_NUM * 2) * sizeof(int));
+  cudaMalloc(&oldg_list_size_dev, (size_t)graph_size * sizeof(int));
+  cudaMalloc(&oldg_revlist_size_dev, (size_t)graph_size * sizeof(int));
+  Graph result(vecs_size);
+  InitRandomKNNGraph(knngraph_dev, graph_size, vectors_dev, false, false);
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    cerr << "Init failed" << endl;
+    exit(-1);
+  }
+  float iteration_costs = 0;
+  Graph newg, oldg;
+  float get_nb_graph_time = 0;
+  float kernel_costs = 0;
+  auto sum_start = chrono::steady_clock::now();
+  long long cmp_times = 0;
+  for (int t = 0; t < iteration; t++) {
+    if (VERBOSE) {
+      cerr << "Start generating NBGraph." << endl;
+    }
+    // Should be removed after testing.
+    auto start = chrono::steady_clock::now();
+    PrepareForUpdate(graph_new_dev, newg_list_size_dev, newg_revlist_size_dev,
+                     graph_old_dev, oldg_list_size_dev, oldg_revlist_size_dev,
+                     knngraph_dev, graph_size);
+    auto end = chrono::steady_clock::now();
+    float tmp_time =
+        (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+            .count() /
+        1e6;
+    get_nb_graph_time += tmp_time;
+    if (VERBOSE) {
+      cerr << "GetNBGraph costs " << tmp_time << endl;
+    }
+    start = chrono::steady_clock::now();
+    float tmp_kernel_costs =
+        UpdateGraph(knngraph_dev, graph_size, vectors_dev, graph_new_dev,
+                    newg_list_size_dev, graph_old_dev, oldg_list_size_dev, k);
+    kernel_costs += tmp_kernel_costs;
+    end = chrono::steady_clock::now();
+    float it_tmp_costs =
+        (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+            .count() /
+        1e6;
+    iteration_costs += it_tmp_costs;
+    if (VERBOSE) {
+      cerr << "Kernel costs " << tmp_kernel_costs << endl;
+      cerr << endl;
+    }
+  }
+  MergeBlocksInNNLists(knngraph_dev, graph_size);
+  auto sum_end = chrono::steady_clock::now();
+  float sum_costs = (float)chrono::duration_cast<std::chrono::microseconds>(
+                        sum_end - sum_start)
+                        .count() /
+                    1e6;
+  // sift10k in cpu should be 0.6s;
+  if (VERBOSE) {
+    cerr << "Compare times: " << cmp_times << endl;
+    cerr << "FLOPS: " << cmp_times * 128 * 3 / kernel_costs / pow(1024.0, 3)
+        << "G" << endl;
+    cerr << "Kernel costs: " << kernel_costs << endl;
+    cerr << "Update costs: " << iteration_costs << endl;
+    cerr << "Get NB graph costs: " << get_nb_graph_time << endl;
+    cerr << "All procedure costs: " << sum_costs << endl;
+    cerr << endl;
+  }
+  cudaFree(graph_new_dev);
+  cudaFree(graph_old_dev);
+  
+  cudaFree(newg_list_size_dev);
+  cudaFree(oldg_list_size_dev);
+  cudaFree(newg_revlist_size_dev);
+  cudaFree(oldg_revlist_size_dev);
+}
+
 void NNDescentForMerge(NNDElement *knngraph_dev, const float *vectors_dev,
                        const int vecs_size, const int vecs_dim,
                        const int split_pos, const int iteration) {

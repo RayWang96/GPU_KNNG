@@ -77,10 +77,15 @@ void TestCUDANNDescent() {
   // string ground_truth_path =
   //     "/home/hwang/data/deep1m/deep1m_knngraph_k100.ivecs";
 
-  string base_path = "/home/hwang/data/sift10m/sift10m.fvecs";
-  string out_path = "/home/hwang/data/result/sift10m_knng_k64.kgraph";
+  string base_path = "/home/hwang/data/sift2m/sift2m.fvecs";
+  string out_path = "/home/hwang/data/result/sift2m_knng_k64.kgraph";
   string ground_truth_path =
-      "/home/hwang/data/sift10m/sift10m_head_1k_gt.ivecs";
+      "/home/hwang/data/sift2m/sift2m_knn100.ivecs";
+
+  // string base_path = "/home/hwang/data/sift10m/sift10m.fvecs";
+  // string out_path = "/home/hwang/data/result/sift10m_knng_k64.kgraph";
+  // string ground_truth_path =
+  //     "/home/hwang/data/sift10m/sift10m_head_1k_gt.ivecs";
 
   // string base_path = "/home/hwang/data/gist1m/gist_base.fvecs";
   // string out_path = "/home/hwang/data/result/gist1m_knng_k64.kgraph";
@@ -163,7 +168,7 @@ void TestCUDAMerge() {
   string base_path = "/home/hwang/data/sift2m/sift2m.fvecs";
   string out_path = "/home/hwang/data/result/sift2m_knng_k64.kgraph";
   string ground_truth_path =
-      "/home/hwang/data/sift2m/sift2m_knn100.ivecs";
+      "/home/hwang/data/sift2m/sift2m_knn100_sorted.ivecs";
   float *vectors;
   int vecs_size, vecs_dim;
   FileTool::ReadBinaryVecs(base_path, &vectors, &vecs_size, &vecs_dim);
@@ -188,17 +193,20 @@ void TestCUDAMerge() {
   NNDElement *knngraph_first_dev, *knngraph_second_dev;
   gpuknn::NNDescent(&knngraph_first_dev, vectors_first_dev, vectors_first_size,
                     vecs_dim);
-  // gpuknn::NNDescent(&knngraph_second_dev, vectors_second_dev,
-  //                   vectors_second_size, vecs_dim);
-  cudaMalloc(&knngraph_second_dev, (size_t)vectors_second_size *
-                                   NEIGHB_NUM_PER_LIST * sizeof(NNDElement));
-  InitRandomKNNGraph(knngraph_second_dev, vectors_second_size, vectors_second_dev, true, false);
+  gpuknn::NNDescent(&knngraph_second_dev, vectors_second_dev,
+                    vectors_second_size, vecs_dim);
+  // cudaMalloc(&knngraph_second_dev, (size_t)vectors_second_size *
+  //                                  NEIGHB_NUM_PER_LIST * sizeof(NNDElement));
+  // InitRandomKNNGraph(knngraph_second_dev, vectors_second_size, vectors_second_dev, true, false);
   NNDElement *knngraph_merged_dev;
   Timer merge_timer;
   merge_timer.start();
   gpuknn::KNNMerge(&knngraph_merged_dev, vectors_first_dev, vectors_first_size,
                    knngraph_first_dev, vectors_second_dev, vectors_second_size,
                    knngraph_second_dev, true);
+  // gpuknn::KNNJMerge(&knngraph_merged_dev, vectors_first_dev, vectors_first_size,
+  //                  knngraph_first_dev, vectors_second_dev, vectors_second_size,
+  //                  knngraph_second_dev);
   cerr << "Merge costs: " << merge_timer.end() << endl;
   NNDElement *result_graph_host;
   ToHostKNNGraph(&result_graph_host, knngraph_merged_dev,

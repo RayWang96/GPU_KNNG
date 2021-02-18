@@ -155,7 +155,8 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
             printf("%d %d\n", new_label,
                    (int)xorshift64star(new_label + cnt) % knngraph_second_size);
           }
-          new_label = xorshift64star(new_label + cnt) % knngraph_second_size;
+          new_label = xorshift64star(new_label + cnt) % knngraph_second_size +
+                      knngraph_first_size;
         }
       } else {
         int rand_knngraph_pos_base =
@@ -166,6 +167,116 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
           cnt++;
           new_label = xorshift64star(new_label + cnt) % knngraph_first_size;
+        }
+      }
+      elem.SetLabel(new_label);
+      knnlist_cache[i * WARP_SIZE + new_pos] = elem;
+    }
+    used_num = tmp_used_num;
+  }
+  int it_num = GetItNum(NEIGHB_NUM_PER_LIST, WARP_SIZE);
+  for (int i = 0; i < it_num; i++) {
+    int pos = i * WARP_SIZE + tx;
+    if (pos < NEIGHB_NUM_PER_LIST)
+      knngraph[global_pos_base + pos] = knnlist_cache[pos];
+  }
+}
+
+__global__ void InitRandomBlockedKNNGraphForJMerge(
+    NNDElement *knngraph, const NNDElement *knngraph_first,
+    const int knngraph_first_size, const NNDElement *knngraph_second,
+    const int knngraph_second_size) {
+  __shared__ NNDElement knnlist_cache[NEIGHB_NUM_PER_LIST];
+  __shared__ int blocks_size[NEIGHB_BLOCKS_NUM];
+  __shared__ int current_block_id;
+  size_t list_id = blockIdx.x;
+  size_t global_pos_base = list_id * NEIGHB_NUM_PER_LIST;
+  int merged_size = knngraph_first_size + knngraph_second_size;
+  int tx = threadIdx.x;
+  if (tx < NEIGHB_BLOCKS_NUM) {
+    blocks_size[tx] = 0;
+  }
+
+  if (list_id < knngraph_first_size) {
+    int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
+    for (int i = 0; i < it_num; i++) {
+      int pos = i * WARP_SIZE + tx;
+      if (pos < FIRST_HALF_NEIGHB_NUM) {
+        NNDElement elem = knngraph_first[global_pos_base + pos];
+        int block_id = elem.label() % NEIGHB_BLOCKS_NUM;
+        int new_pos = atomicAdd(&blocks_size[block_id], 1);
+        if (new_pos >= WARP_SIZE) {
+          atomicExch(&blocks_size[block_id], WARP_SIZE);
+        } else {
+          knnlist_cache[block_id * WARP_SIZE + new_pos] = elem;
+        }
+      }
+    }
+  } else {
+    size_t knngraph_second_pos_base =
+        (list_id - knngraph_first_size) * NEIGHB_NUM_PER_LIST;
+    int it_num = GetItNum(FIRST_HALF_NEIGHB_NUM, WARP_SIZE);
+    for (int i = 0; i < it_num; i++) {
+      int pos = i * WARP_SIZE + tx;
+      if (pos < FIRST_HALF_NEIGHB_NUM) {
+        int new_label =
+            xorshift64star(knngraph_second_pos_base + pos) % merged_size;
+        int cnt = 0;
+        while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
+          cnt++;
+          new_label = xorshift64star(new_label + cnt) % merged_size;
+        }
+        NNDElement elem(1e10, new_label);
+        int block_id = elem.label() % NEIGHB_BLOCKS_NUM;
+        int new_pos = atomicAdd(&blocks_size[block_id], 1);
+        if (new_pos >= WARP_SIZE) {
+          atomicExch(&blocks_size[block_id], WARP_SIZE);
+        } else {
+          knnlist_cache[block_id * WARP_SIZE + new_pos] = elem;
+        }
+      }
+    }
+  }
+  if (tx == 0) {
+    current_block_id = 0;
+  }
+  int used_num = 0;
+  for (int i = 0; i < NEIGHB_BLOCKS_NUM; i++) {
+    int it_num = GetItNum(LAST_HALF_NEIGHB_NUM - used_num, WARP_SIZE);
+    int tmp_used_num = used_num + (WARP_SIZE - blocks_size[i]);
+    for (int j = 0; j < it_num; j++) {
+      int pos = used_num + j * WARP_SIZE + tx;
+      if (pos >= LAST_HALF_NEIGHB_NUM) break;
+      int new_pos = atomicAdd(&blocks_size[i], 1);
+      if (new_pos >= WARP_SIZE) {
+        atomicExch(&blocks_size[i], WARP_SIZE);
+        break;
+      }
+      NNDElement elem(1e10, 12345678);
+      int new_label;
+      if (list_id < knngraph_first_size) {
+        int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
+        new_label =
+            xorshift64star(rand_knngraph_pos_base) % knngraph_second_size;
+        int cnt = 0;
+        while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
+          cnt++;
+          if (cnt >= 100) {
+            printf("%d %d\n", new_label,
+                   (int)xorshift64star(new_label + cnt) % knngraph_second_size);
+          }
+          new_label = xorshift64star(new_label + cnt) % knngraph_second_size +
+                      knngraph_first_size;
+        }
+      } else {
+        int rand_knngraph_pos_base =
+            (list_id - knngraph_first_size) * LAST_HALF_NEIGHB_NUM;
+        new_label =
+            xorshift64star(rand_knngraph_pos_base) % merged_size;
+        int cnt = 0;
+        while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
+          cnt++;
+          new_label = xorshift64star(new_label + cnt) % merged_size;
         }
       }
       elem.SetLabel(new_label);
@@ -195,6 +306,37 @@ void PrepareGraphForMerge(NNDElement **knngraph_dev_ptr,
   //     knngraph_dev, knngraph_first_dev, knngraph_first_size,
   //     knngraph_second_dev, knngraph_second_size, random_knngraph_dev);
   InitRandomBlockedKNNGraph<<<merged_graph_size, WARP_SIZE>>>(
+      knngraph_dev, knngraph_first_dev, knngraph_first_size,
+      knngraph_second_dev, knngraph_second_size);
+  cudaDeviceSynchronize();
+  // vector<vector<NNDElement>> g;
+  // ToHostKNNGraph(&g, knngraph_dev, merged_graph_size, NEIGHB_NUM_PER_LIST);
+  // OutputHostKNNGraph(g, "/home/hwang/codes/GPU_KNNG/results/tmpg.txt");
+  auto cuda_status = cudaGetLastError();
+  if (cuda_status != cudaSuccess) {
+    cerr << cudaGetErrorString(cuda_status) << endl;
+    exit(-1);
+  }
+  if (free_subgraph) {
+    cudaFree(knngraph_first_dev);
+    cudaFree(knngraph_second_dev);
+  }
+}
+
+void PrepareGraphForJMerge(NNDElement **knngraph_dev_ptr,
+                          NNDElement *knngraph_first_dev,
+                          const int knngraph_first_size,
+                          NNDElement *knngraph_second_dev,
+                          const int knngraph_second_size,
+                          const bool free_subgraph = false) {
+  NNDElement *&knngraph_dev = *knngraph_dev_ptr;
+  int merged_graph_size = knngraph_first_size + knngraph_second_size;
+  cudaMalloc(&knngraph_dev, (size_t)merged_graph_size * NEIGHB_NUM_PER_LIST *
+                                sizeof(NNDElement));
+  // CopySecondHalfToKNNGraph<<<merged_graph_size, WARP_SIZE * 2>>>(
+  //     knngraph_dev, knngraph_first_dev, knngraph_first_size,
+  //     knngraph_second_dev, knngraph_second_size, random_knngraph_dev);
+  InitRandomBlockedKNNGraphForJMerge<<<merged_graph_size, WARP_SIZE>>>(
       knngraph_dev, knngraph_first_dev, knngraph_first_size,
       knngraph_second_dev, knngraph_second_size);
   cudaDeviceSynchronize();
@@ -278,6 +420,34 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
   cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
   NNDescentForMerge(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM,
                     vectors_first_size, MERGE_ITERATION);
+  cudaFree(vectors_dev);
+}
+
+void KNNJMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
+               const int vectors_first_size, NNDElement *knngraph_first_dev,
+               float *vectors_second_dev, const int vectors_second_size,
+               NNDElement *knngraph_second_dev) {
+  NNDElement *&knngraph_merged_dev = *knngraph_merged_dev_ptr;
+  float *vectors_dev;
+  int merged_graph_size = vectors_first_size + vectors_second_size;
+  auto start = chrono::steady_clock::now();
+  MarkAllToOld<<<vectors_first_size, NEIGHB_NUM_PER_LIST>>>(knngraph_first_dev);
+  // MarkAllToOld<<<vectors_second_size, NEIGHB_NUM_PER_LIST>>>(
+  //     knngraph_second_dev);
+  cudaDeviceSynchronize();
+  PrepareGraphForJMerge(&knngraph_merged_dev, knngraph_first_dev,
+                        vectors_first_size, knngraph_second_dev,
+                        vectors_second_size);
+  MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
+               vectors_second_dev, vectors_second_size);
+  auto end = chrono::steady_clock::now();
+  float time_cost =
+      (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count() /
+      1e6;
+  cerr << "PrepareGraphForMerge costs: " << time_cost << endl;
+  NNDescentRefine(knngraph_merged_dev, vectors_dev, merged_graph_size, VEC_DIM, 
+                  JMERGE_ITERATION);
   cudaFree(vectors_dev);
 }
 

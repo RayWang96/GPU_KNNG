@@ -8,10 +8,11 @@ using namespace xmuknn;
 #define LARGE_INT 0x3f3f3f3f
 const int VEC_DIM = 128;
 const int NEIGHB_NUM_PER_LIST = 64;
-const int NND_ITERATION = 6;
 const int SAMPLE_NUM = 32;  // assert(SAMPLE_NUM * 2 <= NEIGHB_NUM_PER_LIST);
+const int NND_ITERATION = 6;
 const int MERGE_SAMPLE_NUM = 12;
 const int MERGE_ITERATION = 11;
+const int JMERGE_ITERATION = 6;
 
 const int MAX_DIM = 480; // 96 120 160 192 240 320 480 960
 const int MAX_SKEW_DIM = MAX_DIM + 1;
@@ -42,5 +43,8 @@ void NNDescent(NNDElement **knngraph_result_ptr, const float *vectors_dev,
 vector<vector<NNDElement>> NNDescent(const float *vectors, const int vecs_size,
                                      const int vecs_dim,
                                      const int iteration = 6);
+void NNDescentRefine(NNDElement *knngraph_result_dev_ptr,
+                     const float *vectors_dev, const int vecs_size,
+                     const int vecs_dim, const int iteration = 6);
 }  // namespace gpuknn
 #endif
