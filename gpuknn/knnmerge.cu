@@ -415,16 +415,16 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
                        vectors_second_size, free_sub_data);
   MergeVectors(&vectors_dev, vectors_first_dev, vectors_first_size,
                vectors_second_dev, vectors_second_size, free_sub_data);
-  NNDElement* host_knngraph;
-  ToHostKNNGraph(&host_knngraph, knngraph_merged_dev, merged_graph_size,
-                 NEIGHB_NUM_PER_LIST);
-  ofstream out("./tmp.txt");
-  for (int i = 0; i < merged_graph_size; i++) {
-    for (int j = 0; j < NEIGHB_NUM_PER_LIST; j++) {
-      out << host_knngraph[i * NEIGHB_NUM_PER_LIST + j].label() << "\t";
-    } out << endl;
-  }
-  out.close();
+  // NNDElement* host_knngraph;
+  // ToHostKNNGraph(&host_knngraph, knngraph_merged_dev, merged_graph_size,
+  //                NEIGHB_NUM_PER_LIST);
+  // ofstream out("./tmp.txt");
+  // for (int i = 0; i < merged_graph_size; i++) {
+  //   for (int j = 0; j < NEIGHB_NUM_PER_LIST; j++) {
+  //     out << host_knngraph[i * NEIGHB_NUM_PER_LIST + j].label() << "\t";
+  //   } out << endl;
+  // }
+  // out.close();
   auto end = chrono::steady_clock::now();
   float time_cost =
       (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
