@@ -148,7 +148,8 @@ __global__ void InitRandomBlockedKNNGraph(NNDElement *knngraph,
       if (list_id < knngraph_first_size) {
         int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
         new_label =
-            xorshift64star(rand_knngraph_pos_base + tx) % knngraph_second_size;
+            xorshift64star(rand_knngraph_pos_base + tx) % knngraph_second_size +
+            knngraph_first_size;
         int cnt = 0;
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
           cnt++;
@@ -258,7 +259,8 @@ __global__ void InitRandomBlockedKNNGraphForJMerge(
       if (list_id < knngraph_first_size) {
         int rand_knngraph_pos_base = list_id * LAST_HALF_NEIGHB_NUM;
         new_label =
-            xorshift64star(rand_knngraph_pos_base + tx) % knngraph_second_size;
+            xorshift64star(rand_knngraph_pos_base + tx) % knngraph_second_size +
+            knngraph_first_size;
         int cnt = 0;
         while (new_label % NEIGHB_BLOCKS_NUM != i || new_label == list_id) {
           cnt++;
@@ -416,13 +418,13 @@ void KNNMerge(NNDElement **knngraph_merged_dev_ptr, float *vectors_first_dev,
   NNDElement* host_knngraph;
   ToHostKNNGraph(&host_knngraph, knngraph_merged_dev, merged_graph_size,
                  NEIGHB_NUM_PER_LIST);
-  // ofstream out("./tmp.txt");
-  // for (int i = 0; i < merged_graph_size; i++) {
-  //   for (int j = 0; j < NEIGHB_NUM_PER_LIST; j++) {
-  //     out << host_knngraph[i * NEIGHB_NUM_PER_LIST + j].label() << "\t";
-  //   } out << endl;
-  // }
-  // out.close();
+  ofstream out("./tmp.txt");
+  for (int i = 0; i < merged_graph_size; i++) {
+    for (int j = 0; j < NEIGHB_NUM_PER_LIST; j++) {
+      out << host_knngraph[i * NEIGHB_NUM_PER_LIST + j].label() << "\t";
+    } out << endl;
+  }
+  out.close();
   auto end = chrono::steady_clock::now();
   float time_cost =
       (float)chrono::duration_cast<std::chrono::microseconds>(end - start)
